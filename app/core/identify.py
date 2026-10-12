@@ -21,6 +21,11 @@ What is reported (and why)
 * **feature attribution**: for each spectral feature, the fraction of its integrated optical depth
   explained by each molecule, and the unexplained remainder.
 
+Before the joint fit, :func:`rank_references` uses the same basic idea as astronomical template
+matching: resample a reference onto the observed axis, remove a low-order continuum, and compare
+the weighted chi-square improvement over the continuum-only model. It is a candidate screener,
+not a standalone calibrated probability or abundance estimate.
+
 Honesty rules: references that are not quantitative give *relative* amplitudes only (never
 abundances); the linear model ignores saturation within a band, scattering/clouds and temperature
 structure.  These limits are written into ``DecompositionResult.warnings``.
@@ -48,6 +53,18 @@ _trapz = getattr(np, "trapezoid", None) or np.trapz
 
 class IdentifyError(ValueError):
     """Raised when a decomposition cannot be set up."""
+
+
+@dataclass(frozen=True)
+class CandidateScore:
+    """Single-reference screening result used before the mixture fit."""
+
+    ref_id: str
+    name: str
+    score: float                 # sqrt(delta chi2) versus a level+tilt continuum
+    correlation: float           # weighted correlation after continuum removal
+    delta_chi2: float
+    n_points: int
 
 
 @dataclass
@@ -125,6 +142,72 @@ def _solve(A: FloatArray, b: FloatArray, lower: FloatArray, cols: np.ndarray) ->
     return x, float(np.sum((A[:, cols] @ sol.x - b) ** 2))
 
 
+def rank_references(
+    obs: ObservedSpectrum,
+    library: ReferenceLibrary,
+    ref_ids: Optional[Sequence[str]] = None,
+    window_cm1: Optional[Tuple[float, float]] = None,
+    min_points: int = 20,
+) -> List[CandidateScore]:
+    """Rank molecules by a one-template, continuum-corrected match.
+
+    Each reference is tested independently against ``-ln(T)`` after fitting a
+    level and tilt.  The score is ``sqrt(delta-chi2)`` relative to that
+    continuum-only model, with supplied transmittance errors propagated into
+    optical-depth errors.  This is a screening/ranking statistic, not a
+    detection significance: correlated noise, wrong temperature/pressure, and
+    missing absorbers can all make it optimistic.
+
+    Unlike :func:`decompose`, this function does not let one strong template
+    suppress another. It is therefore useful for selecting a manageable set
+    from a large library before the joint non-negative mixture fit.
+    """
+    ids = list(ref_ids) if ref_ids is not None else library.ids()
+    if not ids:
+        raise IdentifyError("the reference library is empty")
+    nu_all = obs.wavenumber_cm1
+    lo, hi = window_cm1 or (float(np.nanmin(nu_all)), float(np.nanmax(nu_all)))
+    base_mask = (nu_all >= lo) & (nu_all <= hi)
+    if int(base_mask.sum()) < min_points:
+        raise IdentifyError(f"only {int(base_mask.sum())} data points inside the requested ranking window")
+    order = np.argsort(nu_all[base_mask], kind="stable")
+    nu_base = nu_all[base_mask][order]
+    t_base = np.clip(obs.y[base_mask][order], _T_FLOOR, None)
+    sig_base = None if obs.sigma is None else obs.sigma[base_mask][order]
+    usable_t = t_base >= _OPAQUE_T
+    tau_base = -np.log(t_base)
+    out: List[CandidateScore] = []
+    for rid in ids:
+        ref = library.get(rid)
+        inside = (nu_base >= ref.coverage_cm1[0]) & (nu_base <= ref.coverage_cm1[1]) & usable_t
+        if int(inside.sum()) < min_points:
+            continue
+        nu, tau = nu_base[inside], tau_base[inside]
+        sigma = np.ones_like(tau) if sig_base is None else np.maximum(sig_base[inside] / t_base[inside], 1e-6)
+        span = max(float(nu[-1] - nu[0]), 1e-9)
+        u = 2.0 * (nu - nu[0]) / span - 1.0
+        baseline = np.column_stack((np.ones_like(u), u))
+        w = 1.0 / sigma
+        bw = baseline * w[:, None]
+        tw = tau * w
+        base_coef, *_ = np.linalg.lstsq(bw, tw, rcond=None)
+        base_resid = tw - bw @ base_coef
+        k = ref.on(nu)
+        design = np.column_stack((k, baseline))
+        fit = lsq_linear(design * w[:, None], tau * w,
+                         bounds=(np.array([0.0, -np.inf, -np.inf]), np.full(3, np.inf)),
+                         method="bvls")
+        residual = tau * w - (design * w[:, None]) @ fit.x
+        chi_base = float(np.dot(base_resid, base_resid))
+        chi_fit = float(np.dot(residual, residual))
+        delta = max(chi_base - chi_fit, 0.0)
+        k_resid = k * w - (bw @ np.linalg.lstsq(bw, k * w, rcond=None)[0])
+        denom = float(np.linalg.norm(k_resid) * np.linalg.norm(base_resid))
+        corr = float(np.dot(k_resid, base_resid) / denom) if denom > 0 else 0.0
+        out.append(CandidateScore(rid, ref.name, float(np.sqrt(delta)), corr, float(delta), int(inside.sum())))
+    return sorted(out, key=lambda item: (-item.score, -abs(item.correlation), item.ref_id))
+
+
 def decompose(
     obs: ObservedSpectrum,
     library: ReferenceLibrary,
@@ -139,9 +222,17 @@ def decompose(
     if not ids:
         raise IdentifyError("the reference library is empty")
     refs = [library.get(i) for i in ids]
-    cov_lo, cov_hi = library.coverage_cm1(ids)
-    lo, hi = window_cm1 or (cov_lo, cov_hi)
     nu_all = obs.wavenumber_cm1
+    obs_lo, obs_hi = float(np.nanmin(nu_all)), float(np.nanmax(nu_all))
+    cov_lo, cov_hi = library.coverage_cm1(ids)
+    if window_cm1 is None:
+        lo, hi = max(obs_lo, cov_lo), min(obs_hi, cov_hi)
+    else:
+        lo, hi = window_cm1
+    if hi <= lo:
+        raise IdentifyError(
+            f"the selected references ({cov_lo:.0f}-{cov_hi:.0f} cm⁻¹) do not overlap "
+            f"the uploaded spectrum ({obs_lo:.0f}-{obs_hi:.0f} cm⁻¹); import references covering this range")
     mask = (nu_all >= lo) & (nu_all <= hi)
     if mask.sum() < 20:
         raise IdentifyError(f"only {int(mask.sum())} data points inside {lo:.0f}-{hi:.0f} cm⁻¹ "
@@ -157,7 +248,10 @@ def decompose(
     keep = t >= cut
     n_opaque = int((~keep).sum())
     if keep.sum() < 20:
-        raise IdentifyError("almost every point in the window is opaque (T < 5 %); nothing to fit")
+        raise IdentifyError(
+            "almost every point in the overlapping window is opaque (T < 5 %), so optical depth is "
+            "only a lower limit; check the imported y-axis mode, use a less saturated range, or provide "
+            "uncertainties/continuum-normalized transmission")
     nu, t = nu[keep], t[keep]
     sig_all = sig_all[keep] if sig_all is not None else None
     t_c = np.clip(t, _T_FLOOR, None)

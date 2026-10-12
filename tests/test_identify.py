@@ -11,8 +11,11 @@ from app.core import mock_data
 from app.core.config import ConfigManager
 from app.core.engine import Unit, build_engine
 from app.core.fitting import ObservedSpectrum, find_features
-from app.core.identify import IdentifyError, decompose
-from app.core.library import LibraryError, ReferenceLibrary, ReferenceSpectrum, import_jcamp, reference_from_arrays
+from app.core.identify import IdentifyError, decompose, rank_references
+from app.core.library import (LibraryError, ReferenceLibrary, ReferenceSpectrum,
+                              fetch_nist_jcamp, hapi_cross_section_reference,
+                              import_exomol_transitions, import_jcamp, import_nist_jcamp,
+                              nist_webbook_url, reference_from_arrays)
 from app.core.physics import lorentzian
 from app.core.sources import SOURCES, CitationLog
 
@@ -100,6 +103,59 @@ def test_import_jcamp_transmittance_and_quantitative(tmp_path):
         import_jcamp(tmp_path / "missing.jdx")
 
 
+def test_nist_webbook_lookup_is_injectable_and_preserves_provenance():
+    payload = _jcamp("TRANSMITTANCE", np.linspace(1.0, 0.4, 16))
+    seen = []
+
+    def fake_fetch(url):
+        seen.append(url)
+        return payload
+
+    url = nist_webbook_url("C7446095", index=2)
+    assert "JCAMP=C7446095" in url and "Index=2" in url and "IR-SPEC" in url
+    assert "Type=UVVis" in nist_webbook_url("C287923", spectrum="uvvis")
+    fetched_url, text = fetch_nist_jcamp("7446-09-5", 2, fetch=fake_fetch)
+    assert fetched_url == seen[0] and text == payload
+    ref = import_nist_jcamp("7446-09-5", 2, fetch=fake_fetch)
+    assert ref.source_key == "nist_webbook" and ref.ref_id == "nist:7446-09-5:2"
+    assert ref.meta["nist_index"] == 2 and ref.meta["query"] == seen[1]
+    with pytest.raises(LibraryError):
+        fetch_nist_jcamp("not-a-cas", fetch=fake_fetch)
+    with pytest.raises(LibraryError):
+        fetch_nist_jcamp("7446095", fetch=lambda _: "not JCAMP")
+
+
+def test_nist_uvvis_jcamp_is_imported_as_a_shape(tmp_path):
+    x = np.linspace(250.0, 900.0, 32)
+    y = 1.0 + 2.0 * np.exp(-0.5 * ((x - 520.0) / 40.0) ** 2)
+    payload = _jcamp("LOG EPSILON", y, xunits="NM", x_range=(250.0, 900.0))
+    ref = import_nist_jcamp("C287923", spectrum="uvvis", fetch=lambda _: payload)
+    assert ref.meta["spectrum"] == "uvvis" and ref.y_kind == "uv_log_epsilon"
+    assert not ref.quantitative and ref.coverage_cm1 == pytest.approx((1e7 / 900.0, 1e7 / 250.0), rel=1e-3)
+
+
+def test_hapi_adapter_marks_sampled_cross_section_quantitative():
+    nu = np.linspace(1000.0, 1100.0, 16)
+    xs = np.exp(-0.5 * ((nu - 1050.0) / 8.0) ** 2) * 1e-21
+    ref = hapi_cross_section_reference("CO2", nu, xs, 800.0, pressure_atm=0.1)
+    assert ref.source_key == "hapi" and ref.quantitative and ref.y_kind == "cross_section"
+    assert ref.meta["units"] == "cm2 molecule-1" and ref.meta["temperature_k"] == 800.0
+    with pytest.raises(LibraryError):
+        hapi_cross_section_reference("CO2", nu[:-1], xs, 800.0)
+
+
+def test_exomol_transition_import_is_shape_only_and_supports_compressed_files(tmp_path):
+    states = tmp_path / "co.states"
+    states.write_text("\n".join(f"{i} {i * 100.0:.3f} 1" for i in range(1, 18)) + "\n")
+    transitions = tmp_path / "co.trans.bz2"
+    import bz2
+    transitions.write_bytes(bz2.compress("\n".join(f"{i + 1} {i} 1e-3" for i in range(1, 10)).encode()))
+    ref = import_exomol_transitions(transitions, states, "CO", temperature_k=1200.0)
+    assert ref.source_key == "exomol" and not ref.quantitative and ref.y_kind == "line_strength"
+    assert ref.nu_cm1.size == 9 and ref.coverage_cm1 == pytest.approx((100.0, 100.0))
+    assert "no line profile" in ref.meta["assumptions"]
+
+
 def test_library_roundtrip_and_engine_references_match_sliders(tmp_path, engine):
     lib = ReferenceLibrary.from_engine(engine)
     assert set(lib.ids()) == set(engine.gas_index) and all(r.y_kind == "tau_per_multiplier" for r in lib)
@@ -132,10 +188,37 @@ def test_decompose_finds_unmodelled_molecule_and_rejects_decoy(engine, unit):
     assert any("RELATIVE" in w for w in res.warnings)                          # honesty about units
 
 
+def test_rank_references_screens_a_large_library_before_mixture_fit():
+    target = _bands("TARGET", [1150, 2300, 3410], [1.0, 0.6, 0.35], width=5.0)
+    decoy = _bands("DECOY", [800, 1750, 2900], [1.0, 0.8, 0.5], width=5.0)
+    nu = np.linspace(500, 4000, 1200)
+    t = np.exp(-1.7 * target.on(nu))
+    obs = ObservedSpectrum(nu, t, Unit.WAVENUMBER, np.full(nu.size, 0.01))
+    ranked = rank_references(obs, ReferenceLibrary([decoy, target]))
+    assert [r.ref_id for r in ranked] == ["TARGET", "DECOY"]
+    assert ranked[0].score > 10 and ranked[0].delta_chi2 == pytest.approx(ranked[0].score ** 2)
+    assert ranked[0].n_points == nu.size
+
+
+def test_decompose_uses_observation_reference_overlap_and_explains_no_overlap():
+    nu = np.linspace(10000.0, 19500.0, 240)
+    k = np.exp(-0.5 * ((nu - 15000.0) / 500.0) ** 2) + 0.2
+    uv = reference_from_arrays("UV", "UV target", "X", nu, k, "nist_webbook")
+    obs = ObservedSpectrum(nu, np.exp(-0.8 * k), Unit.WAVENUMBER)
+    result = decompose(obs, ReferenceLibrary([uv]))
+    assert result.window_cm1[0] >= 10000.0 and result.components[0].detected
+
+    ir = ReferenceLibrary([_bands("IR", [1000.0], [1.0])])
+    with pytest.raises(IdentifyError, match="do not overlap"):
+        decompose(obs, ir)
+
+
 def test_missing_molecule_leaves_a_poor_fit_which_the_attribution_calls_unexplained(engine):
     obs = mock_data.make_mock_observation(engine, Unit.WAVENUMBER, TRUTH, ("SO2", 3.0), noise=0.003)
     feats = find_features(obs, min_snr=5.0)
-    res = decompose(obs, ReferenceLibrary.from_engine(engine), features=feats)    # SO2 NOT in the library
+    library = ReferenceLibrary.from_engine(engine)
+    library.remove("SO2")
+    res = decompose(obs, library, features=feats)    # SO2 NOT in the library
     assert res.reduced_chi2 > 5
     so2_feat = [a for a in res.attributions if abs(a.nu_peak_cm1 - 1362) < 15]
     assert so2_feat and so2_feat[0].unexplained > 0.3                          # nothing explains the 1362 band
@@ -165,7 +248,7 @@ def test_decompose_input_validation(engine):
     with pytest.raises(IdentifyError):
         decompose(obs, ReferenceLibrary())
     far = ObservedSpectrum(np.linspace(8000, 9000, 50), np.ones(50), Unit.WAVENUMBER)
-    with pytest.raises(IdentifyError, match="only 0 data points"):
+    with pytest.raises(IdentifyError, match="do not overlap"):
         decompose(far, ReferenceLibrary.from_engine(engine))
     given = ObservedSpectrum(obs.x, obs.y, obs.unit, np.full(obs.x.size, 0.003))   # file-supplied sigma path
     r = decompose(given, ReferenceLibrary.from_engine(engine))

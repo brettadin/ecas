@@ -17,6 +17,9 @@
     {"id": "CH4", "name": "Methane",        "formula": "CH₄", "orca_out": "mock://CH4", "mass_amu": 16.043, "gamma0_cm1_atm": 0.060, "n_exponent": 0.70, "default_multiplier": 1.0, "multiplier_max": 20},
     {"id": "O3",  "name": "Ozone",          "formula": "O₃",  "orca_out": "mock://O3",  "mass_amu": 47.998, "gamma0_cm1_atm": 0.070, "n_exponent": 0.70, "default_multiplier": 1.0, "multiplier_max": 20},
     {"id": "N2O", "name": "Nitrous Oxide",  "formula": "N₂O", "orca_out": "mock://N2O", "mass_amu": 44.013, "gamma0_cm1_atm": 0.075, "n_exponent": 0.70, "default_multiplier": 0.5, "multiplier_max": 20},
-    {"id": "SO2", "name": "Sulfur Dioxide", "formula": "SO₂", "orca_out": "mock://SO2", "mass_amu": 64.066, "gamma0_cm1_atm": 0.100, "n_exponent": 0.70, "default_multiplier": 1.0, "multiplier_max": 20, "enabled": false}
+    {"id": "SO2", "name": "Sulfur Dioxide", "formula": "SO₂", "orca_out": "mock://SO2", "mass_amu": 64.066, "gamma0_cm1_atm": 0.100, "n_exponent": 0.70, "default_multiplier": 0.0, "multiplier_max": 20},
+    {"id": "NH3", "name": "Ammonia", "formula": "NH₃", "orca_out": "mock://NH3", "mass_amu": 17.031, "gamma0_cm1_atm": 0.090, "n_exponent": 0.70, "default_multiplier": 0.0, "multiplier_max": 20},
+    {"id": "HCN", "name": "Hydrogen Cyanide", "formula": "HCN", "orca_out": "mock://HCN", "mass_amu": 27.026, "gamma0_cm1_atm": 0.080, "n_exponent": 0.70, "default_multiplier": 0.0, "multiplier_max": 20},
+    {"id": "CO", "name": "Carbon Monoxide", "formula": "CO", "orca_out": "mock://CO", "mass_amu": 28.010, "gamma0_cm1_atm": 0.070, "n_exponent": 0.70, "default_multiplier": 0.0, "multiplier_max": 20}
   ]
 }

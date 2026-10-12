@@ -174,6 +174,9 @@ class AbundanceScanResult:
     wavelength_um: FloatArray
     best_model_depth_ppm: FloatArray
     warnings: tuple[str, ...] = ()
+    boundary_status: str = "interior"
+    conditional_limit_kind: Optional[str] = None
+    conditional_limit_vmr: Optional[float] = None
 
 
 def depth_spectrum_channel_edges(wavelength_um: FloatArray) -> FloatArray:
@@ -412,11 +415,25 @@ def scan_single_gas_abundance(
         warnings.append("lower Δχ²=1 bound is not established within the scan grid")
     if upper is None:
         warnings.append("upper Δχ²=1 bound is not established within the scan grid")
+    boundary_status = "interior"
+    conditional_limit_kind: Optional[str] = None
+    conditional_limit_vmr: Optional[float] = None
+    if best_index == 0:
+        boundary_status = "lower_scan_edge"
+        if upper is not None:
+            conditional_limit_kind = "upper"
+            conditional_limit_vmr = upper
+    elif best_index == vmr_grid.size - 1:
+        boundary_status = "upper_scan_edge"
+        if lower is not None:
+            conditional_limit_kind = "lower"
+            conditional_limit_vmr = lower
     return AbundanceScanResult(
         species, vmr_grid, delta_chi_squared, float(vmr_grid[best_index]),
         float(chi_squared[best_index]), float(offsets[best_index]), lower, upper, int(valid.sum()),
         np.asarray(measured.wavelength_um, dtype=np.float64).copy(),
-        channel_models[best_index], tuple(warnings))
+        channel_models[best_index], tuple(warnings), boundary_status,
+        conditional_limit_kind, conditional_limit_vmr)
 
 
 def compute_petit_radtrans_transmission(

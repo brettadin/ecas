@@ -37,6 +37,11 @@ MOCK_MODES: Dict[str, Tuple[Tuple[float, float], ...]] = {
     "O3": ((701.0, 9.5), (1042.0, 11.0), (1103.0, 130.0)),
     "N2O": ((589.0, 14.0), (589.0, 14.0), (1285.0, 9.0), (2224.0, 260.0)),
     "SO2": ((518.0, 10.0), (1151.0, 20.0), (1362.0, 90.0)),
+    # Representative placeholder bands for the expanded default dashboard set.
+    # These are deliberately MOCK data, not a substitute for HITRAN/ExoMol data.
+    "NH3": ((950.0, 34.0), (1627.0, 20.0), (3337.0, 52.0)),
+    "HCN": ((713.0, 8.0), (2097.0, 18.0), (3311.0, 45.0)),
+    "CO": ((2143.0, 80.0),),
 }
 _LINEAR = frozenset({"CO2", "N2O"})        # 5 zero modes instead of 6
 VARIANTS = ("orca5", "orca4", "orca6", "bare")

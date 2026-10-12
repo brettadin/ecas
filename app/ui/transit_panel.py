@@ -698,7 +698,12 @@ class TransitPanel(QWidget):
 
     @property
     def report_lines(self):
-        return self._report_text()
+        lines = self._report_text()
+        if self._transmission_spectrum is not None:
+            retrieval = self._report.toPlainText().splitlines()
+            if retrieval:
+                lines += ["", "Transmission retrieval state:", *retrieval]
+        return lines
 
     # ---------------------------------------------------------------- planet lookup
     def _on_lookup(self) -> None:
@@ -741,8 +746,22 @@ class TransitPanel(QWidget):
         except (TransitError, OSError) as exc:
             self._report.setPlainText(f"Could not load the downloaded TESS light curve {dlg.path}:\n{exc}")
             return
+        observation = dlg.observation or {}
+        lc.meta.update({
+            "mast_target": target,
+            "mast_observation": observation.get("obs_id", ""),
+            "mast_obsid": observation.get("obsid", ""),
+            "mast_instrument": observation.get("instrument_name", "TESS"),
+            "planet_record": {
+                "values": dict(self._planet.values),
+                "query": self._planet.query,
+                "url": self._planet.url,
+                "retrieved": self._planet.retrieved,
+                "refs": dict(self._planet.refs),
+            },
+        })
         self.set_lightcurve(lc)
-        obs_id = (dlg.observation or {}).get("obs_id", "unknown observation")
+        obs_id = observation.get("obs_id", "unknown observation")
         if self._citations is not None:
             self._citations.record("mast", f"{target} TESS light curve (MAST observation {obs_id})",
                                    query=f"https://mast.stsci.edu/portal/Mashup/Clients/Mast/Portal.html?searchQuery={target}")
@@ -1269,14 +1288,22 @@ class TransitPanel(QWidget):
         self._abundance_caption.setText(
             f"Conditional profile scan for {result.species}; all other gas VMRs and atmospheric inputs fixed.")
         lower = (f"{result.lower_1sigma_vmr:.3g}" if result.lower_1sigma_vmr is not None
-                 else f"below scan minimum ({result.volume_mixing_ratio_grid[0]:.3g})")
+                 else f"not established within scan ({result.volume_mixing_ratio_grid[0]:.3g})")
         upper = (f"{result.upper_1sigma_vmr:.3g}" if result.upper_1sigma_vmr is not None
-                 else f"above scan maximum ({result.volume_mixing_ratio_grid[-1]:.3g})")
+                 else f"not established within scan ({result.volume_mixing_ratio_grid[-1]:.3g})")
+        if result.conditional_limit_kind == "upper":
+            interval_text = (f"conditional upper limit: VMR < {result.conditional_limit_vmr:.3g} "
+                             "(best fit at lower scan edge)")
+        elif result.conditional_limit_kind == "lower":
+            interval_text = (f"conditional lower limit: VMR > {result.conditional_limit_vmr:.3g} "
+                             "(best fit at upper scan edge)")
+        else:
+            interval_text = f"conditional Δχ²=1 interval: {lower} – {upper}"
         self._chart_tabs.setCurrentWidget(self._abundance_plot)
         self._report.setPlainText(
             f"Conditional single-gas profile scan: {result.species}\n"
             f"Best-fit volume mixing ratio: {result.best_volume_mixing_ratio:.4g}\n"
-            f"Conditional Δχ²=1 interval: {lower} – {upper}\n"
+            f"{interval_text}\n"
             f"Minimum χ²: {result.best_chi_squared:.3g}\n"
             f"Fitted constant transit-depth offset: {result.best_depth_offset_ppm:.2f} ppm\n"
             f"Channels: {result.n_channels}; scan grid: "
@@ -1393,11 +1420,13 @@ class TransitPanel(QWidget):
     def capture(self):
         """Return the transit inputs, including the source series when present."""
         st = self._stellar()
-        return self._lc, {"radius_rsun": st.radius_rsun, "mass_msun": st.mass_msun,
-                          "teff_k": st.teff_k}, self._spin_w[1].value(), self._series
+        return (self._lc, {"radius_rsun": st.radius_rsun, "mass_msun": st.mass_msun,
+                           "teff_k": st.teff_k}, self._spin_w[1].value(), self._series,
+                self._transmission_spectrum)
 
     def restore(self, lc, stellar: dict, window: float, analyze: bool = True,
-                spectral_series: Optional[SpectralTimeSeries] = None) -> None:
+                spectral_series: Optional[SpectralTimeSeries] = None,
+                depth_spectrum: Optional[DepthSpectrum] = None) -> None:
         """Re-install inputs, then re-derive the analysis (results are never stored)."""
         if stellar:
             self._spin_r[1].setValue(stellar.get("radius_rsun", 1.0))
@@ -1431,6 +1460,12 @@ class TransitPanel(QWidget):
             self.set_lightcurve(lc)
             if analyze:
                 self.analyze(blocking=True)
+        if depth_spectrum is not None and self._transmission_spectrum is None:
+            self._transmission_spectrum = depth_spectrum
+            self._btn_export_depth.setEnabled(True)
+            self._btn_atmosphere_model.setEnabled(True)
+            self._btn_abundance_scan.setEnabled(self._series is not None)
+            self._render_transmission_spectrum()
 
     def shutdown(self) -> None:
         self._play_timer.stop()

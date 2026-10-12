@@ -234,15 +234,53 @@ def test_single_gas_scan_reports_unbounded_profile_and_boundary_best_fit():
     assert result.best_volume_mixing_ratio == pytest.approx(1e-6)
     assert result.lower_1sigma_vmr is None
     assert result.upper_1sigma_vmr is None
+    assert result.boundary_status == "lower_scan_edge"
+    assert result.conditional_limit_kind is None
+    assert result.conditional_limit_vmr is None
     assert any("boundary" in warning for warning in result.warnings)
     assert sum("bound" in warning for warning in result.warnings) == 3
 
 
+@pytest.mark.parametrize(
+    ("known_vmr", "expected_kind", "expected_limit"),
+    [(1e-6, "upper", "upper_1sigma_vmr"), (1e-2, "lower", "lower_1sigma_vmr")],
+)
+def test_single_gas_scan_reports_one_sided_limit_at_scan_edges(
+    known_vmr, expected_kind, expected_limit,
+):
+    class MonotonicRadtrans:
+        def __init__(self, **kwargs):
+            pass
+
+        def calculate_transit_radii(self, *, mass_fractions, mean_molar_masses, **kwargs):
+            wavelength_um = np.linspace(0.8, 2.2, 101)
+            h2o_vmr = mass_fractions["H2O"][0] * mean_molar_masses[0] / 18.01528
+            feature = np.sin(np.linspace(0.0, 4.0 * np.pi, wavelength_um.size))
+            radius = 7.1492e9 + 1.2e7 * np.log10(h2o_vmr / known_vmr) * feature
+            return wavelength_um * 1e-4, radius, {}
+
+    parameters = PetitRadtransParameters(mixing_ratios={"H2O": known_vmr})
+    centers = np.linspace(1.0, 2.0, 21)
+    model = compute_petit_radtrans_transmission(
+        parameters, (float(depth_spectrum_channel_edges(centers)[0]),
+                     float(depth_spectrum_channel_edges(centers)[-1])), MonotonicRadtrans)
+    measured_template = DepthSpectrum(centers, np.zeros(centers.size), np.full(centers.size, 5e-6))
+    noiseless = compare_model_to_depth_spectrum(model, measured_template)
+    measured = DepthSpectrum(centers, noiseless.model_depth_ppm * 1e-6, np.full(centers.size, 5e-6))
+    result = scan_single_gas_abundance(
+        parameters, measured, "H2O", np.logspace(-6, -2, 17), MonotonicRadtrans)
+
+    assert result.boundary_status in {"lower_scan_edge", "upper_scan_edge"}
+    assert result.conditional_limit_kind == expected_kind
+    assert result.conditional_limit_vmr == getattr(result, expected_limit)
+    assert result.conditional_limit_vmr is not None
+
+
 def test_synthetic_validation_helpers_measure_bias_and_interval_coverage():
     model = TransmissionAtmosphereModel(
-        np.linspace(1.0, 2.0, 101),
-        1000.0 + 100.0 * np.sin(np.linspace(0.0, 4.0 * np.pi, 101)),
-        np.full(101, 1.0),
+        np.linspace(0.9, 2.1, 121),
+        1000.0 + 100.0 * np.sin(np.linspace(0.0, 4.0 * np.pi, 121)),
+        np.full(121, 1.0),
     )
     centers = np.linspace(1.05, 1.95, 9)
     first = make_synthetic_depth_spectrum(model, centers, 2.0, depth_offset_ppm=12.0, seed=11)
@@ -258,12 +296,31 @@ def test_synthetic_validation_helpers_measure_bias_and_interval_coverage():
     result.best_volume_mixing_ratio = 1.1e-4
     result.lower_1sigma_vmr = 8e-5
     result.upper_1sigma_vmr = 1.3e-4
+    result.best_chi_squared = 1.2
+    result.best_depth_offset_ppm = 12.0
     result.warnings = ()
     summary = summarize_profile_scan([(result, 1e-4, 11)])
     assert summary.interval_coverage_fraction == pytest.approx(1.0)
     assert summary.bounded_interval_fraction == pytest.approx(1.0)
     assert summary.boundary_limited_fraction == pytest.approx(0.0)
     assert summary.median_absolute_log10_bias == pytest.approx(np.log10(1.1))
+
+
+def test_synthetic_validation_can_apply_line_spread_and_reject_invalid_sigma():
+    model = TransmissionAtmosphereModel(
+        np.linspace(0.9, 2.1, 121),
+        1000.0 + 100.0 * np.sin(np.linspace(0.0, 4.0 * np.pi, 121)),
+        np.full(121, 1.0),
+    )
+    centers = np.linspace(1.05, 1.95, 9)
+    sharp = make_synthetic_depth_spectrum(model, centers, 2.0, seed=5)
+    blurred = make_synthetic_depth_spectrum(model, centers, 2.0, seed=5,
+                                            line_spread_sigma_um=0.03)
+    assert not np.array_equal(sharp.depth, blurred.depth)
+    with pytest.raises(ValueError, match="line-spread sigma"):
+        make_synthetic_depth_spectrum(model, centers, 2.0, line_spread_sigma_um=0.0)
+    with pytest.raises(ValueError, match="correlation length"):
+        make_synthetic_depth_spectrum(model, centers, 2.0, correlation_length_channels=0.0)
 
 
 def test_profile_validation_runner_repeats_each_injection_and_seed():
@@ -281,6 +338,8 @@ def test_profile_validation_runner_repeats_each_injection_and_seed():
         result.best_volume_mixing_ratio = 1e-4
         result.lower_1sigma_vmr = 5e-5
         result.upper_1sigma_vmr = 2e-4
+        result.best_chi_squared = 1.0
+        result.best_depth_offset_ppm = 7.0
         result.warnings = ()
         return result
 

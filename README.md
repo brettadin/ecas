@@ -105,9 +105,17 @@ flux tables (for example columns `CENTRALWAVELNG` and `FLAM`), the importer sele
 columns and normalises flux to a continuum for display/feature analysis; this does not turn emitted flux
 into a planetary transmission spectrum. If archive error columns are empty, the imported spectrum has no
 uncertainties and is displayed without error bars.
-Archive `FLAM`/`FNU` spectra are recognized as emission-flux inputs: transmission gas fitting and transmission
-peak identification are disabled for them, and **Fit blackbody emission continuum** provides a simple
+Archive `FLAM`/`FNU` spectra are recognized as emission-flux inputs: they are displayed in both Spectroscopy
+and Identify as relative emission data; transmission gas fitting and transmission peak identification are
+disabled for them, and **Fit blackbody emission continuum** provides a simple
 color-temperature baseline with arbitrary scale. Because import normalization discards absolute calibration,
 this does not determine luminosity, radius, or atmospheric composition; molecular emission modeling is not
 yet implemented.
+
+The Identify tab's **Browse NIST…** action supports both IR and UV/Vis JCAMP references. UV/Vis data are
+normally reported by NIST on a wavelength axis and are converted to wavenumber for matching; they are
+treated as relative spectral shapes because solvent, path length, and concentration conditions matter.
+The simulator's built-in IR bands cover roughly 400–4200 cm⁻¹, so observations around 10,000–19,500 cm⁻¹
+need imported UV/Vis references with overlapping coverage.
+
 Optional 3-D viewport: `pip install pyvista pyvistaqt` (otherwise a 2-D orbit view is used).

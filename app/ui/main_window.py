@@ -26,9 +26,9 @@ from numpy.typing import NDArray
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QListWidgetItem, QFileDialog, QMessageBox, QFrame, QGroupBox, QHBoxLayout,
-    QLabel, QListWidget, QMainWindow, QPushButton, QScrollArea, QSlider, QSplitter,
-    QTabWidget, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QListWidgetItem, QFileDialog, QMessageBox, QDockWidget, QFrame,
+    QGroupBox, QHBoxLayout, QLabel, QListWidget, QMainWindow, QPlainTextEdit, QPushButton, QScrollArea, QSlider,
+    QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..core.config import GasSpec, PhysicsDefaults
@@ -227,6 +227,16 @@ class MainWindow(QMainWindow):
         self._workspaces.currentChanged.connect(lambda _i: self._identify.refresh()
                                                 if self._workspaces.currentWidget() is self._identify else None)
         self.setCentralWidget(self._workspaces)
+
+        self._activity_log = QPlainTextEdit()
+        self._activity_log.setReadOnly(True)
+        self._activity_log.setMaximumBlockCount(500)
+        self._activity_log.setPlaceholderText("ECAS activity and warnings will appear here.")
+        self._activity_dock = QDockWidget("Activity log", self)
+        self._activity_dock.setObjectName("activityLogDock")
+        self._activity_dock.setWidget(self._activity_log)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._activity_dock)
+        self._activity_dock.hide()
         self._build_menu()
 
         self._status = QLabel()
@@ -942,18 +952,26 @@ class MainWindow(QMainWindow):
                 action.setShortcut(shortcut)
         helpm = self.menuBar().addMenu("&Help")
         helpm.addAction("Sources && citations…").triggered.connect(self._on_sources)
+        view = self.menuBar().addMenu("&View")
+        view.addAction(self._activity_dock.toggleViewAction())
 
     def _ask_save(self, title: str, name: str, filt: str) -> Optional[str]:
         path, _ = QFileDialog.getSaveFileName(self, title, name, filt)
         return path or None
 
     def _warn(self, text: str) -> None:
+        self._log(f"WARNING: {text}")
         self.statusBar().showMessage(text, 10000)
+
+    def _log(self, text: str) -> None:
+        """Append a concise user-visible event without replacing the status message."""
+        stamp = time.strftime("%H:%M:%S")
+        self._activity_log.appendPlainText(f"[{stamp}] {text}")
 
     # ---- project state
     def capture_state(self) -> ProjectState:
         c = self._conditions
-        lc, stellar, window, spectral_series = self._transit.capture()
+        lc, stellar, window, spectral_series, depth_spectrum = self._transit.capture()
         return ProjectState(
             conditions={"pressure_atm": c.pressure_atm, "temperature_k": c.temperature_k,
                         "envelope_hwhm_cm1": c.envelope_hwhm_cm1, "line_shape": c.line_shape.value},
@@ -961,7 +979,7 @@ class MainWindow(QMainWindow):
                          for g in self._engine.gases},
             anomaly_threshold=float(self._thr_spin.value()), stellar=stellar,
             detrend_window_days=window, observation=self._obs, lightcurve=lc,
-            spectral_series=spectral_series)
+            spectral_series=spectral_series, depth_spectrum=depth_spectrum)
 
     def restore_state(self, st: ProjectState) -> None:
         """Re-apply a project: sliders first, then data, then re-run fit analysis/transit."""
@@ -980,7 +998,8 @@ class MainWindow(QMainWindow):
         if st.observation is not None:
             self.set_observation(st.observation)
         self._transit.restore(st.lightcurve, st.stellar, st.detrend_window_days,
-                              spectral_series=st.spectral_series)
+                              spectral_series=st.spectral_series,
+                              depth_spectrum=st.depth_spectrum)
         self._refresh()
 
     def _on_save_project(self) -> None:
@@ -988,6 +1007,7 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 self._project_path = str(save_project(path, self.capture_state()))
+                self._log(f"Saved project: {self._project_path}")
                 self.statusBar().showMessage(f"Saved {self._project_path}", 8000)
             except OSError as exc:
                 self._warn(f"Save failed: {exc}")
@@ -999,6 +1019,7 @@ class MainWindow(QMainWindow):
         try:
             self.restore_state(load_project(path))
             self._project_path = path
+            self._log(f"Opened project: {path}")
             self.statusBar().showMessage(f"Opened {path}", 8000)
         except ProjectError as exc:
             QMessageBox.warning(self, "Cannot open project", str(exc))
@@ -1008,6 +1029,7 @@ class MainWindow(QMainWindow):
         path = self._ask_save("Export model spectrum", "model.csv", "CSV (*.csv)")
         if path:
             ecas_export.export_model_csv(path, self._engine, self.active_unit(), self._multipliers)
+            self._log(f"Exported model spectrum: {path}")
 
     def _on_export_fit(self) -> None:
         if self._obs is None or self._fit is None:
@@ -1015,6 +1037,7 @@ class MainWindow(QMainWindow):
         path = self._ask_save("Export fit residuals", "fit.csv", "CSV (*.csv)")
         if path:
             ecas_export.export_fit_csv(path, self._obs, self._fit)
+            self._log(f"Exported fit residuals: {path}")
 
     def _on_export_anomalies(self) -> None:
         if not self._anomalies:
@@ -1022,6 +1045,7 @@ class MainWindow(QMainWindow):
         path = self._ask_save("Export anomalies", "anomalies.csv", "CSV (*.csv)")
         if path:
             ecas_export.export_anomalies_csv(path, self._anomalies)
+            self._log(f"Exported anomalies: {path}")
 
     def _on_export_report(self) -> None:
         path = self._ask_save("Export report", "ecas_report.md", "Markdown (*.md)")
@@ -1032,6 +1056,7 @@ class MainWindow(QMainWindow):
                 identification_lines=self._identify.result.summary_lines() if self._identify.result else (),
                 citations=self._citations)
             Path(path).write_text(text, encoding="utf-8")
+            self._log(f"Exported Markdown report: {path}")
 
     def _on_export_png(self) -> None:
         """Save whichever chart is on screen (spectrum tab, or the transit light curve)."""
@@ -1044,6 +1069,7 @@ class MainWindow(QMainWindow):
             exporter = ImageExporter(item)
             exporter.parameters()["width"] = 1920
             exporter.export(path)
+            self._log(f"Exported plot: {path}")
 
     def _on_sources(self) -> None:
         SourcesDialog(self._citations, self).exec()

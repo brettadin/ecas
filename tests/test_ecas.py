@@ -94,7 +94,7 @@ def test_broadening_scaling():
 # ------------------------------------------------------------------- config
 def test_config_validation(tmp_path):
     cfg = ConfigManager.load()
-    assert [g.gas_id for g in cfg.active_gases] == ["H2O", "CO2", "CH4", "O3", "N2O"]
+    assert [g.gas_id for g in cfg.active_gases] == ["H2O", "CO2", "CH4", "O3", "N2O", "SO2", "NH3", "HCN", "CO"]
     assert len({g.color for g in cfg.gases}) == len(cfg.gases)      # auto-allocated, unique
     raw = ConfigManager.to_dict(cfg)
     assert ConfigManager.from_dict(raw).gases == cfg.gases           # round trip
@@ -249,30 +249,34 @@ def test_fit_recovers_truth_without_anomaly(fresh_engine, unit):
     fit = fit_multipliers(fresh_engine, obs, x0=np.ones(fresh_engine.n_gases))
     true = fresh_engine.multipliers_from_dict(TRUTH)
     assert fit.success and 0.7 < fit.reduced_chi2 < 1.4
-    np.testing.assert_allclose(fit.multipliers, true, rtol=0.1)
+    np.testing.assert_allclose(fit.multipliers[:5], true[:5], rtol=0.1)
+    assert np.max(fit.multipliers[5:]) < 0.1
     assert np.all(fit.uncertainties > 0)
     assert find_anomalies(obs, fit, 3.0, min_points=3) == []
 
 
 def test_anomaly_detection_and_reverse_id(fresh_engine):
     obs = mock_data.make_mock_observation(fresh_engine, Unit.WAVENUMBER, TRUTH, ("SO2", 3.0))
-    fit = fit_multipliers(fresh_engine, obs, x0=np.ones(fresh_engine.n_gases))
+    free = np.ones(fresh_engine.n_gases, dtype=bool)
+    free[fresh_engine.gas_index["SO2"]] = False
+    fit = fit_multipliers(fresh_engine, obs, x0=fresh_engine.default_multipliers(), free=free)
     found = find_anomalies(obs, fit, 3.0)
     assert found and all(a.extra_absorption for a in found)
     assert any(abs(a.nu_peak_cm1 - 1362.0) < 25 for a in found)       # strongest SO2 band
-    ranked = CandidateLibrary.load().rank([a.nu_peak_cm1 for a in found], exclude=fresh_engine.gas_index)
+    ranked = CandidateLibrary.load().rank([a.nu_peak_cm1 for a in found],
+                                          exclude=("H2O", "CO2", "CH4", "O3", "N2O"))
     assert ranked[0].molecule == "SO2"
 
 
 def test_fit_respects_bounds_and_free_mask(fresh_engine):
     obs = mock_data.make_mock_observation(fresh_engine, Unit.WAVENUMBER, TRUTH, anomaly=None)
-    free = np.array([True, True, False, False, False])
+    free = np.array([True, True] + [False] * (fresh_engine.n_gases - 2))
     x0 = fresh_engine.default_multipliers()
     fit = fit_multipliers(fresh_engine, obs, x0=x0, free=free)
     np.testing.assert_array_equal(fit.multipliers[~free], x0[~free])
     assert np.all(fit.multipliers >= 0) and np.all(fit.uncertainties[~free] == 0)
     with pytest.raises(FitError):
-        fit_multipliers(fresh_engine, obs, free=np.zeros(5, bool))
+        fit_multipliers(fresh_engine, obs, free=np.zeros(fresh_engine.n_gases, bool))
 
 
 def test_csv_loader_units_and_errors(tmp_path):
@@ -432,10 +436,12 @@ def test_project_roundtrip(tmp_path, fresh_engine):
         fresh_engine, transit_truth, n_times=120, n_channels=12,
         multipliers=fresh_engine.default_multipliers())
     series.meta["planet_record"] = {"values": {"pl_name": "WASP-39 b", "st_teff": np.float64(5485.0)}}
+    from app.core.transit import DepthSpectrum
+    depth_spectrum = DepthSpectrum(np.linspace(1.0, 2.0, 12), np.full(12, 0.01), np.full(12, 0.0002))
     st = ProjectState(conditions={"pressure_atm": 2.0, "line_shape": "gaussian"},
                       multipliers={"H2O": 4.0}, anomaly_threshold=4.5,
                       stellar={"radius_rsun": 1.2}, observation=obs, lightcurve=lc,
-                      spectral_series=series, notes="hi")
+                      spectral_series=series, depth_spectrum=depth_spectrum, notes="hi")
     path = save_project(tmp_path / "demo", st)                       # extension auto-appended
     assert path.suffix == ".ecas"
     back = load_project(path)
@@ -446,6 +452,8 @@ def test_project_roundtrip(tmp_path, fresh_engine):
     assert back.spectral_series is not None
     np.testing.assert_array_equal(back.spectral_series.flux, series.flux)
     assert back.spectral_series.meta["planet_record"]["values"]["st_teff"] == pytest.approx(5485.0)
+    assert back.depth_spectrum is not None
+    np.testing.assert_array_equal(back.depth_spectrum.depth, depth_spectrum.depth)
     (tmp_path / "bad.ecas").write_bytes(b"not a zip")
     with pytest.raises(ProjectError):
         load_project(tmp_path / "bad.ecas")
@@ -471,7 +479,7 @@ def test_exports(tmp_path, fresh_engine):
     cands = CandidateLibrary.load().rank([a.nu_peak_cm1 for a in found])
     md = ecas_export.build_report_markdown(fresh_engine, fresh_engine.conditions, fit.multipliers,
                                            fit, found, cands, ["Period 3.2 d"])
-    assert "## Gas multipliers" in md and "SO2" in md and "Period 3.2 d" in md
+    assert "## Gas multipliers" in md and "Sulfur Dioxide" in md and "Period 3.2 d" in md
 
 
 def test_gui_project_roundtrip(tmp_path):
@@ -681,7 +689,8 @@ def test_emission_flux_ui_uses_blackbody_not_transmission_fit(tmp_path):
     assert not window._btn_identify.isEnabled()
     assert window._btn_blackbody.isEnabled()
     assert not window._identify._btn_run.isEnabled()
-    assert "supports transmission/absorption data only" in window._identify._dataset_label.text()
+    assert "displayed below" in window._identify._dataset_label.text()
+    assert window._identify._data_item.xData is not None
     assert not window._canvases[Unit.WAVELENGTH].master.isVisible()
     window._on_fit_blackbody()
     assert window._canvases[Unit.WAVELENGTH].emission_continuum.isVisible()
@@ -736,12 +745,14 @@ def test_gaussian_line_shape_is_visible_and_responds_to_pressure(fresh_engine):
 def test_fit_window_and_continuum(fresh_engine):
     obs = mock_data.make_mock_observation(fresh_engine, Unit.WAVENUMBER, TRUTH, anomaly=None, noise=0.003)
     tilted = ObservedSpectrum(obs.x, obs.y * (0.4 + 0.1 * (obs.x - 450) / 3650), obs.unit)
-    plain = fit_multipliers(fresh_engine, tilted, x0=np.ones(5))
-    cont = fit_multipliers(fresh_engine, tilted, x0=np.ones(5), baseline=2)
+    plain = fit_multipliers(fresh_engine, tilted, x0=np.ones(fresh_engine.n_gases))
+    cont = fit_multipliers(fresh_engine, tilted, x0=np.ones(fresh_engine.n_gases), baseline=2)
     assert cont.reduced_chi2 < 0.2 * plain.reduced_chi2                         # continuum absorbs the slope
     assert cont.baseline_coeffs.size == 2 and 0.3 < cont.baseline_coeffs[0] < 0.6
-    np.testing.assert_allclose(cont.multipliers, fresh_engine.multipliers_from_dict(TRUTH), rtol=0.15)
-    win = fit_multipliers(fresh_engine, obs, x0=np.ones(5), window_cm1=(1000.0, 2500.0))
+    expected = fresh_engine.multipliers_from_dict(TRUTH)
+    np.testing.assert_allclose(cont.multipliers[:5], expected[:5], rtol=0.15)
+    assert np.max(cont.multipliers[5:]) < 0.1
+    win = fit_multipliers(fresh_engine, obs, x0=np.ones(fresh_engine.n_gases), window_cm1=(1000.0, 2500.0))
     assert win.n_excluded > 0 and win.used.x.min() >= 1000 and win.used.x.max() <= 2500
     with pytest.raises(FitError):
         fit_multipliers(fresh_engine, obs, window_cm1=(10.0, 20.0))

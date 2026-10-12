@@ -1,7 +1,7 @@
 """
 ECAS "Identify" workspace: explain the active observation as a combination of reference spectra.
 
-Left:  reference library (simulator gases + imported JCAMP-DX spectra), run controls.
+Left:  reference library (simulator gases + imported spectra), candidate ranking, and run controls.
 Right: observed vs model with each detected molecule's own contribution, residuals, and tabs for
        the per-molecule table, per-feature attribution (who explains this peak, do they overlap?),
        warnings, and the references behind every spectrum used.
@@ -20,20 +20,21 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
-    QTabWidget, QVBoxLayout, QWidget,
+    QTabWidget, QVBoxLayout, QWidget, QInputDialog, QSizePolicy,
 )
 
 from ..core.engine import SpectrumEngine
 from ..core.fitting import FitError, ObservedSpectrum, find_features
-from ..core.identify import DecompositionResult, IdentifyError, decompose
-from ..core.library import DEFAULT_DIR, LibraryError, ReferenceLibrary, import_jcamp
+from ..core.identify import DecompositionResult, IdentifyError, decompose, rank_references
+from ..core.library import (DEFAULT_DIR, LibraryError, ReferenceLibrary, hapi_cross_section_reference,
+                            import_exomol_transitions, import_jcamp, import_nist_jcamp)
 from ..core.sources import SOURCES, CitationLog
 from .theme import ACCENT, ERR, MUTED, OK, WARN, CollapsibleSection, muted, primary
 
 _COLORS = ("#4FC3F7", "#FF8A65", "#81C784", "#BA68C8", "#FFD54F", "#4DB6AC", "#F06292", "#A1887F",
            "#90A4AE", "#DCE775")
 _SOURCE_TAG = {"mock": "MOCK", "orca": "ORCA", "nist_webbook": "NIST", "nist_quantitative_ir": "NIST-QIR",
-               "hitran2020": "HITRAN"}
+               "hitran2020": "HITRAN", "hapi": "HAPI", "exomol": "ExoMol"}
 
 
 class IdentifyPanel(QWidget):
@@ -144,18 +145,35 @@ class IdentifyPanel(QWidget):
         b_rm.clicked.connect(self._on_remove)
         row.addWidget(b_imp, 1)
         row.addWidget(b_rm)
+        row_sources = QHBoxLayout()
+        b_nist = QPushButton("Browse NIST…")
+        b_nist.setToolTip("Fetch an evaluated IR or UV/Vis JCAMP spectrum from the NIST Chemistry WebBook by CAS/WebBook ID.")
+        b_nist.clicked.connect(self._on_nist)
+        b_exomol = QPushButton("Import ExoMol…")
+        b_exomol.setToolTip("Import an ExoMol .states/.trans pair as a documented line-strength shape.")
+        b_exomol.clicked.connect(self._on_exomol)
+        b_hapi = QPushButton("Import HAPI CSV…")
+        b_hapi.setToolTip("Import sampled HAPI wavenumber/cross-section output; columns: cm-1, cm2 molecule-1.")
+        b_hapi.clicked.connect(self._on_hapi)
+        for button in (b_nist, b_exomol, b_hapi):
+            row_sources.addWidget(button)
         row2 = QHBoxLayout()
         b_all, b_none = QPushButton("All"), QPushButton("None")
         b_all.clicked.connect(lambda: self._set_all(True))
         b_none.clicked.connect(lambda: self._set_all(False))
         row2.addWidget(b_all)
         row2.addWidget(b_none)
+        b_rank = QPushButton("Auto-rank candidates")
+        b_rank.setToolTip("Screen the checked library against this observation, then keep the strongest templates for the joint fit.")
+        b_rank.clicked.connect(self._rank_candidates)
+        row2.addWidget(b_rank, 1)
         self._lib_label = QLabel("")
         muted(self._lib_label)
         self._lib_label.setWordWrap(True)
         for w in (self._ref_list,):
             lib.body_layout().addWidget(w)
         lib.body_layout().addLayout(row)
+        lib.body_layout().addLayout(row_sources)
         lib.body_layout().addLayout(row2)
         lib.body_layout().addWidget(self._lib_label)
         lay.addWidget(lib)
@@ -177,6 +195,8 @@ class IdentifyPanel(QWidget):
         self._btn_run.clicked.connect(self.run)
         self._status = QLabel("")
         self._status.setWordWrap(True)
+        self._status.setMinimumHeight(64)
+        self._status.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
         run.body_layout().addLayout(form)
         for w in (self._chk_cont, self._chk_feat, self._btn_run, self._status):
             run.body_layout().addWidget(w)
@@ -219,6 +239,32 @@ class IdentifyPanel(QWidget):
         self._ref_list.blockSignals(False)
         self._update_summary()
 
+    def _rank_candidates(self) -> None:
+        obs = self._get_obs()
+        if obs is None:
+            self._status.setText(f"<span style='color:{WARN}'>Load an observation first.</span>")
+            return
+        lib = self._all_refs()
+        ids = [i for i in self._checked_ids() if i in lib]
+        try:
+            ranked = rank_references(obs, lib, ids)
+        except IdentifyError as exc:
+            self._status.setText(f"<span style='color:{ERR}'>Candidate ranking failed: {exc}</span>")
+            return
+        keep = {item.ref_id for item in ranked[:min(12, max(4, int(np.sqrt(len(ranked)) * 3)))]}
+        self._ref_list.blockSignals(True)
+        for i in range(self._ref_list.count()):
+            item = self._ref_list.item(i)
+            rid = item.data(Qt.ItemDataRole.UserRole)
+            item.setCheckState(Qt.CheckState.Checked if rid in keep else Qt.CheckState.Unchecked)
+        self._ref_list.blockSignals(False)
+        if ranked:
+            preview = ", ".join(f"{r.name} ({r.score:.1f}σ)" for r in ranked[:5])
+            self._status.setText(f"<span style='color:{OK}'>Kept {len(keep)} candidates.</span> Strongest: {preview}")
+        else:
+            self._status.setText(f"<span style='color:{WARN}'>No references covered enough usable points.</span>")
+        self._update_summary()
+
     def _update_summary(self) -> None:
         ids = self._checked_ids()
         obs = self._get_obs()
@@ -229,7 +275,7 @@ class IdentifyPanel(QWidget):
         is_emission = obs is not None and obs.meta.get("spectrum_kind") == "emission_flux"
         if is_emission:
             dataset_text += ("<br><span style='color:%s'><b>Emission spectrum:</b> "
-                             "molecular identification currently supports transmission/absorption data only.</span>") % WARN
+                             "displayed below; molecular line identification is not yet enabled for emitted flux.</span>") % WARN
         if obs is not None and obs.meta.get("source") == "transmission-spectrum":
             dataset_text += ("<br><span style='color:%s'><b>Exploratory comparison only:</b> "
                              "measured transit depths were mapped to relative pseudo-transmittance; "
@@ -240,10 +286,43 @@ class IdentifyPanel(QWidget):
         self._lib_label.setText(f"{len(ids)} selected  ·  {n_user} imported.  Imported spectra are saved to "
                                 f"{self._library_dir if self._library_dir else '(session only)'}.")
         self._btn_run.setEnabled(obs is not None and not is_emission and bool(ids))
+        if is_emission:
+            self._show_emission_observation(obs)
+        elif self.result is None and obs is not None:
+            self._plot.setLabel("left", "Transmittance / normalized spectrum")
+            self._model_item.setVisible(True)
+            self._data_item.setData(obs.wavenumber_cm1, obs.y)
 
     def refresh(self) -> None:
         """Call when the dataset or simulator conditions changed."""
         self._rebuild_list()
+
+    def _show_emission_observation(self, obs: ObservedSpectrum) -> None:
+        """Display emission data without applying absorption/transmission physics."""
+        self.result = None
+        nu = obs.wavenumber_cm1
+        order = np.argsort(nu)
+        x, y = nu[order], obs.y[order]
+        self._data_item.setData(x, y)
+        self._model_item.clear()
+        self._model_item.setVisible(False)
+        self._resid_item.clear()
+        for item in self._curves.values():
+            self._plot.removeItem(item)
+        self._curves.clear()
+        self._table.setRowCount(0)
+        self._features.clear()
+        self._plot.setLabel("bottom", "Wavenumber (cm⁻¹)")
+        self._plot.setLabel("left", f"Relative {obs.meta.get('flux_density_kind', 'emission').upper()}")
+        pad = max(float(np.ptp(x)) * 0.02, 1.0)
+        y_lo, y_hi = float(np.nanmin(y)), float(np.nanmax(y))
+        y_pad = max((y_hi - y_lo) * 0.08, 1e-6)
+        self._plot.setRange(xRange=(float(x.min()) - pad, float(x.max()) + pad),
+                            yRange=(y_lo - y_pad, y_hi + y_pad), padding=0.0)
+        self._notes.setPlainText(
+            "Emission spectrum displayed as relative flux. The current reference library and "
+            "mixture fitter model absorption/transmission, so no molecular emission identification "
+            "is claimed yet. Fit a blackbody continuum on the Spectroscopy tab for an exploratory baseline.")
 
     def _on_import(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(self, "Import reference spectra", "",
@@ -267,6 +346,80 @@ class IdentifyPanel(QWidget):
         self._rebuild_list()
         self._status.setText(f"Imported {ref.name} ({'quantitative' if ref.quantitative else 'shape only'}).")
         return True
+
+    def _add_reference(self, ref, detail: str, query: str = "") -> bool:
+        self._user.add(ref)
+        self._citations.record(ref.source_key, detail, query=query)
+        if self._library_dir is not None:
+            try:
+                self._user.save(self._library_dir)
+            except OSError:
+                pass
+        self._rebuild_list()
+        self._status.setText(f"Imported {ref.name} ({'quantitative' if ref.quantitative else 'shape only'}).")
+        return True
+
+    def _on_nist(self) -> None:
+        identifier, accepted = QInputDialog.getText(self, "NIST WebBook", "CAS/WebBook ID:")
+        if not accepted or not identifier.strip():
+            return
+        spectrum, accepted = QInputDialog.getItem(
+            self, "NIST WebBook", "Spectrum collection:", ["IR", "UV/Vis"], 0, False)
+        if not accepted:
+            return
+        index, accepted = QInputDialog.getInt(self, "NIST WebBook", "Spectrum index:", 0, 0, 999)
+        if not accepted:
+            return
+        try:
+            ref = import_nist_jcamp(identifier, index, spectrum=spectrum.lower().replace("/", "-"))
+        except LibraryError as exc:
+            self._status.setText(f"<span style='color:{ERR}'>NIST import failed: {exc}</span>")
+            return
+        self._add_reference(ref, f"{ref.name} from NIST WebBook", ref.meta.get("query", ""))
+
+    def _on_exomol(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Select ExoMol states and transitions", "",
+                                                "ExoMol files (*.states *.trans *.bz2 *.gz);;All files (*)")
+        states = next((p for p in paths if ".states" in Path(p).name), None)
+        transitions = next((p for p in paths if ".trans" in Path(p).name), None)
+        if not states or not transitions:
+            self._status.setText("Select both an ExoMol .states file and its .trans file.")
+            return
+        molecule, accepted = QInputDialog.getText(self, "ExoMol line list", "Molecule/formula:")
+        if not accepted or not molecule.strip():
+            return
+        temperature, accepted = QInputDialog.getDouble(self, "ExoMol line list", "Reference temperature (K):", 1500.0, 1.0, 100000.0, 1)
+        if not accepted:
+            return
+        try:
+            ref = import_exomol_transitions(transitions, states, molecule.strip(), temperature)
+        except LibraryError as exc:
+            self._status.setText(f"<span style='color:{ERR}'>ExoMol import failed: {exc}</span>")
+            return
+        self._add_reference(ref, f"{ref.name} ExoMol line list", ref.meta.get("transitions_file", ""))
+
+    def _on_hapi(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import HAPI cross-section CSV", "", "CSV (*.csv *.txt);;All files (*)")
+        if not path:
+            return
+        molecule, accepted = QInputDialog.getText(self, "HAPI cross-section", "Molecule/formula:")
+        if not accepted or not molecule.strip():
+            return
+        temperature, accepted = QInputDialog.getDouble(self, "HAPI cross-section", "Temperature (K):", 296.0, 1.0, 100000.0, 1)
+        if not accepted:
+            return
+        try:
+            table = np.genfromtxt(path, delimiter=",", comments="#", names=True)
+            if table.dtype.names and len(table.dtype.names) >= 2:
+                nu, cross_section = (np.asarray(table[name], dtype=float) for name in table.dtype.names[:2])
+            else:
+                raw = np.loadtxt(path, delimiter=",")
+                nu, cross_section = raw[:, 0], raw[:, 1]
+            ref = hapi_cross_section_reference(molecule.strip(), nu, cross_section, temperature)
+        except (OSError, ValueError, IndexError, LibraryError) as exc:
+            self._status.setText(f"<span style='color:{ERR}'>HAPI import failed: {exc}</span>")
+            return
+        self._add_reference(ref, f"{ref.name} HAPI cross-section", ref.meta.get("query", ""))
 
     def _on_remove(self) -> None:
         item = self._ref_list.currentItem()

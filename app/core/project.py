@@ -18,7 +18,7 @@ import numpy as np
 
 from .engine import Unit
 from .fitting import ObservedSpectrum
-from .transit import LightCurve
+from .transit import DepthSpectrum, LightCurve
 from .timeseries import SpectralTimeSeries
 
 PROJECT_VERSION = 1
@@ -43,6 +43,7 @@ class ProjectState:
     observation: Optional[ObservedSpectrum] = None
     lightcurve: Optional[LightCurve] = None
     spectral_series: Optional[SpectralTimeSeries] = None
+    depth_spectrum: Optional[DepthSpectrum] = None
 
 
 def save_project(path: Union[str, Path], state: ProjectState) -> Path:
@@ -57,7 +58,7 @@ def save_project(path: Union[str, Path], state: ProjectState) -> Path:
         "anomaly_threshold": state.anomaly_threshold, "stellar": state.stellar,
         "detrend_window_days": state.detrend_window_days,
         "config_path": state.config_path, "notes": state.notes,
-        "observation": None, "lightcurve": None, "spectral_series": None,
+        "observation": None, "lightcurve": None, "spectral_series": None, "depth_spectrum": None,
     }
     if state.observation is not None:
         o = state.observation
@@ -78,6 +79,11 @@ def save_project(path: Union[str, Path], state: ProjectState) -> Path:
         if series.flux_err is not None:
             arrays["series_flux_err"] = series.flux_err
         doc["spectral_series"] = {"meta": _jsonable(series.meta)}
+    if state.depth_spectrum is not None:
+        spectrum = state.depth_spectrum
+        arrays.update(depth_wavelength=spectrum.wavelength_um, depth=spectrum.depth,
+                      depth_err=spectrum.depth_err)
+        doc["depth_spectrum"] = {"present": True}
 
     buf = io.BytesIO()
     np.savez_compressed(buf, **arrays)
@@ -118,6 +124,10 @@ def load_project(path: Union[str, Path]) -> ProjectState:
             state.spectral_series = SpectralTimeSeries(
                 data["series_time"], data["series_wavelength"], data["series_flux"],
                 data.get("series_flux_err"), series.get("meta", {}))
+        if doc.get("depth_spectrum"):
+            spectrum = doc["depth_spectrum"]
+            state.depth_spectrum = DepthSpectrum(
+                data["depth_wavelength"], data["depth"], data["depth_err"])
     except (KeyError, ValueError) as exc:
         raise ProjectError(f"Project arrays are inconsistent: {exc}") from exc
     return state
