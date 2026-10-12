@@ -2,6 +2,21 @@
 
 Newest first.  Versions follow `0.PHASE.PATCH`.  Every entry says what changed, why, and how it was verified.
 
+## Unreleased — NIST HTTP 403 repair (Oct 2026)
+**Fixed**
+- Fixed NIST Browse HTTP 403 failures by identifying ECAS with a project
+  User-Agent and accepting both HTML name-search and plain-text JCAMP responses.
+  Added regression coverage for the request headers; the focused Identify suite
+  now passes 17 tests.
+- Fixed NIST JCAMP 404s for name-resolved spectra by using the actual NIST
+  download query shape. Name lookup now prefers an exact species label
+  (for example, `water`) over related isotopologues and compounds.
+- Corrected the NIST IR JCAMP download selector from the WebBook page value
+  `IR-SPEC` to the actual download value `IR`, which is what the NIST download
+  link uses.
+- Matched NIST's download link exactly by omitting the extra `Units=SI`
+  parameter from JCAMP requests.
+
 ## Unreleased — Conditional retrieval contract and edge diagnostics (Oct 2026)
 **Added**
 - Formalized the first retrieval scope: one gas VMR plus a fitted constant depth
@@ -138,6 +153,10 @@ Newest first.  Versions follow `0.PHASE.PATCH`.  Every entry says what changed, 
   do not overlap the uploaded 10,000–19,500 cm⁻¹ spectrum. ECAS must report
   this as an evidence gap, not as a molecular non-detection; real UV/Vis
   reference validation remains open.
+- Fixed the NIST Browse dialog mismatch: it now accepts chemical names as well
+  as CAS/WebBook IDs by resolving names through NIST before requesting the
+  spectrum. The index prompt now explains that index `0` is the first available
+  spectrum record.
 
 ## 0.8.0 — Identification, sources & citations, professional UI (Oct 2026)
 **Added**

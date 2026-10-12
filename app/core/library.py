@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import bz2
 import gzip
+from html import unescape
 import re
 import tempfile
 import urllib.parse
@@ -40,6 +41,7 @@ from .tables import RawTable, TableError, read_table
 
 FloatArray = NDArray[np.float64]
 DEFAULT_DIR = Path.home() / ".ecas" / "library"
+NIST_USER_AGENT = "ECAS/0.8 (exoplanet atmosphere analysis; research use)"
 
 
 class LibraryError(ValueError):
@@ -83,24 +85,89 @@ def reference_from_arrays(ref_id, name, formula, nu_cm1, k, source_key, quantita
     return ReferenceSpectrum(ref_id, name, formula, nu_cm1, k, source_key, quantitative, y_kind, dict(meta))
 
 
-def nist_webbook_url(identifier: str, index: int = 0, spectrum: str = "ir") -> str:
-    """Return a NIST WebBook IR or UV/Vis JCAMP endpoint."""
+def _numeric_nist_identifier(identifier: str) -> Optional[str]:
     value = str(identifier).strip().upper().replace("-", "")
     if value.startswith("C"):
         value = value[1:]
-    if not value.isdigit():
+    return value if value.isdigit() else None
+
+
+def nist_webbook_url(identifier: str, index: int = 0, spectrum: str = "ir") -> str:
+    """Return a NIST WebBook IR or UV/Vis JCAMP endpoint."""
+    value = _numeric_nist_identifier(identifier)
+    if value is None:
         raise LibraryError("NIST WebBook lookup needs a numeric CAS/WebBook identifier")
     if int(index) < 0:
         raise LibraryError("NIST spectrum index must be non-negative")
     kind = str(spectrum).strip().lower()
     if kind in ("ir", "ir-spec", "infrared"):
-        nist_type = "IR-SPEC"
+        # IR-SPEC is the WebBook page selector.  The actual JCAMP download
+        # link uses the shorter Type=IR value.
+        nist_type = "IR"
     elif kind in ("uv", "uv-vis", "uv/vis", "uvvis"):
         nist_type = "UVVis"
     else:
         raise LibraryError("NIST spectrum type must be 'ir' or 'uvvis'")
     return ("https://webbook.nist.gov/cgi/cbook.cgi?" +
-            urllib.parse.urlencode({"JCAMP": f"C{value}", "Index": int(index), "Type": nist_type}))
+            urllib.parse.urlencode({"JCAMP": f"C{value}", "Index": int(index),
+                                    "Type": nist_type}))
+
+
+def _fetch_nist_text(url: str, fetch=None) -> str:
+    if fetch is None:
+        try:
+            # NIST WebBook rejects urllib's default Python user agent with HTTP
+            # 403.  Identify the application and request either HTML (name
+            # lookup) or plain text/JCAMP (spectrum download).
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": NIST_USER_AGENT,
+                    "Accept": "text/plain, text/html, */*",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except OSError as exc:
+            raise LibraryError(f"NIST WebBook request failed: {exc}") from exc
+    try:
+        return str(fetch(url))
+    except Exception as exc:
+        raise LibraryError(f"NIST WebBook request failed: {exc}") from exc
+
+
+def resolve_nist_identifier(identifier: str, fetch=None) -> tuple[str, str]:
+    """Resolve a CAS/WebBook ID or chemical name to ``(numeric_id, query_url)``."""
+    numeric = _numeric_nist_identifier(identifier)
+    if numeric is not None:
+        return numeric, ""
+    name = str(identifier).strip()
+    if not name:
+        raise LibraryError("enter a chemical name or numeric CAS/WebBook identifier")
+    query = "https://webbook.nist.gov/cgi/cbook.cgi?" + urllib.parse.urlencode({"Name": name, "Units": "SI"})
+    html = _fetch_nist_text(query, fetch)
+    # NIST's name search is deliberately broad: a search for "water" can
+    # include isotopologues and compounds whose *other names* contain water.
+    # Prefer an anchor whose visible species name exactly matches the query,
+    # while retaining the broad IDs for a useful ambiguity error otherwise.
+    linked = re.findall(
+        r"href=[\"'](?:https?://webbook\.nist\.gov)?/cgi/cbook\.cgi\?ID=(C\d+)[^\"']*[\"'][^>]*>(.*?)</a>",
+        html, flags=re.IGNORECASE | re.DOTALL,
+    )
+    exact = sorted({f"C{cas[1:]}" for cas, label in linked
+                    if re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", "", label))).strip().casefold()
+                    == name.casefold()})
+    matches = sorted(set(re.findall(r"cbook\.cgi\?ID=(C\d+)", html, flags=re.IGNORECASE)))
+    if len(exact) == 1:
+        return exact[0][1:], query
+    if len(exact) > 1:
+        matches = exact
+    if not matches:
+        raise LibraryError(f"NIST found no species for chemical name {name!r}")
+    if len(matches) > 1:
+        shown = ", ".join(matches[:6])
+        raise LibraryError(f"NIST found multiple species for {name!r} ({shown}); use a CAS number")
+    return matches[0][1:], query
 
 
 def fetch_nist_jcamp(identifier: str, index: int = 0, fetch=None, spectrum: str = "ir") -> tuple[str, str]:
@@ -109,18 +176,10 @@ def fetch_nist_jcamp(identifier: str, index: int = 0, fetch=None, spectrum: str 
     ``fetch`` is injectable for offline tests. Network access is deliberately
     opt-in through this function; callers must still record the returned URL.
     """
-    url = nist_webbook_url(identifier, index, spectrum)
-    if fetch is None:
-        try:
-            with urllib.request.urlopen(url, timeout=30) as response:
-                text = response.read().decode("utf-8", errors="replace")
-        except OSError as exc:
-            raise LibraryError(f"NIST WebBook request failed: {exc}") from exc
-    else:
-        try:
-            text = fetch(url)
-        except Exception as exc:
-            raise LibraryError(f"NIST WebBook request failed: {exc}") from exc
+    numeric, _ = resolve_nist_identifier(identifier, fetch) if _numeric_nist_identifier(identifier) is None \
+        else (_numeric_nist_identifier(identifier), "")
+    url = nist_webbook_url(numeric, index, spectrum)
+    text = _fetch_nist_text(url, fetch)
     if not str(text).lstrip().startswith("##"):
         raise LibraryError("NIST did not return a JCAMP-DX spectrum; check the identifier and spectrum index")
     return url, str(text)
@@ -137,7 +196,9 @@ def import_nist_jcamp(identifier: str, index: int = 0, fetch=None, spectrum: str
                            ref_id=f"nist:{str(identifier).strip().upper().lstrip('C')}:{index}")
     finally:
         path.unlink(missing_ok=True)
-    ref.meta.update({"nist_identifier": str(identifier), "nist_index": int(index), "query": url,
+    numeric = re.search(r"JCAMP=C(\d+)", url, flags=re.IGNORECASE)
+    ref.meta.update({"nist_identifier": str(identifier), "nist_resolved_id": numeric.group(1) if numeric else "",
+                     "nist_index": int(index), "query": url,
                      "retrieved_via": "NIST WebBook JCAMP endpoint", "spectrum": str(spectrum)})
     return ref
 
