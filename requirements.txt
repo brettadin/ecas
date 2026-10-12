@@ -1,0 +1,9 @@
+PyQt6>=6.5
+pyqtgraph>=0.13.3
+numpy>=1.24
+scipy>=1.10
+pytest>=7.0   # tests only
+astropy>=6.0      # Box Least Squares period search
+pyvista>=0.43     # 3-D viewport (optional: panel degrades to the 2-D sky view)
+pyvistaqt>=0.11
+astroquery>=0.4.7  # optional: MAST (JWST/HST) access

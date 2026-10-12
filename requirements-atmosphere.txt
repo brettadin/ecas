@@ -1,0 +1,2 @@
+# Optional clear-atmosphere forward-model backend. See README.md for compiler and data setup.
+petitRADTRANS>=3.4,<4

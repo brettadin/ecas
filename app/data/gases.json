@@ -1,0 +1,22 @@
+{
+  "grid": {
+    "n_points": 8192,
+    "wavenumber_range_cm1": [400.0, 4200.0],
+    "wavelength_range_um": [0.1, 25.0]
+  },
+  "physics": {
+    "pressure_atm": 1.0,
+    "temperature_k": 296.0,
+    "envelope_hwhm_cm1": 4.0,
+    "tau_scale": 0.08,
+    "line_shape": "voigt"
+  },
+  "gases": [
+    {"id": "H2O", "name": "Water Vapor",    "formula": "H₂O", "orca_out": "mock://H2O", "mass_amu": 18.015, "gamma0_cm1_atm": 0.090, "n_exponent": 0.70, "default_multiplier": 1.0, "multiplier_max": 20},
+    {"id": "CO2", "name": "Carbon Dioxide", "formula": "CO₂", "orca_out": "mock://CO2", "mass_amu": 44.010, "gamma0_cm1_atm": 0.070, "n_exponent": 0.70, "default_multiplier": 0.5, "multiplier_max": 20},
+    {"id": "CH4", "name": "Methane",        "formula": "CH₄", "orca_out": "mock://CH4", "mass_amu": 16.043, "gamma0_cm1_atm": 0.060, "n_exponent": 0.70, "default_multiplier": 1.0, "multiplier_max": 20},
+    {"id": "O3",  "name": "Ozone",          "formula": "O₃",  "orca_out": "mock://O3",  "mass_amu": 47.998, "gamma0_cm1_atm": 0.070, "n_exponent": 0.70, "default_multiplier": 1.0, "multiplier_max": 20},
+    {"id": "N2O", "name": "Nitrous Oxide",  "formula": "N₂O", "orca_out": "mock://N2O", "mass_amu": 44.013, "gamma0_cm1_atm": 0.075, "n_exponent": 0.70, "default_multiplier": 0.5, "multiplier_max": 20},
+    {"id": "SO2", "name": "Sulfur Dioxide", "formula": "SO₂", "orca_out": "mock://SO2", "mass_amu": 64.066, "gamma0_cm1_atm": 0.100, "n_exponent": 0.70, "default_multiplier": 1.0, "multiplier_max": 20, "enabled": false}
+  ]
+}

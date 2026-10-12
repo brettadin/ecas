@@ -1,0 +1,19 @@
+{
+  "_note": "Approximate fundamental band centres (cm^-1) with relative strengths, for reverse identification only. Replace/extend with HITRAN-derived or ORCA-computed values.",
+  "molecules": {
+    "SO2":   {"name": "Sulfur Dioxide",     "bands": [[518, 0.15], [1151, 0.3], [1362, 1.0]]},
+    "NH3":   {"name": "Ammonia",            "bands": [[950, 1.0], [1627, 0.4], [3337, 0.3]]},
+    "HCN":   {"name": "Hydrogen Cyanide",   "bands": [[712, 1.0], [3311, 0.8]]},
+    "C2H2":  {"name": "Acetylene",          "bands": [[729, 1.0], [3289, 0.7]]},
+    "CO":    {"name": "Carbon Monoxide",    "bands": [[2143, 1.0]]},
+    "OCS":   {"name": "Carbonyl Sulfide",   "bands": [[859, 0.3], [2062, 1.0]]},
+    "NO2":   {"name": "Nitrogen Dioxide",   "bands": [[750, 0.2], [1618, 1.0]]},
+    "H2S":   {"name": "Hydrogen Sulfide",   "bands": [[1183, 0.3], [2615, 0.2]]},
+    "CFC12": {"name": "CCl2F2 (CFC-12)",    "bands": [[922, 0.6], [1101, 1.0], [1161, 0.9]]},
+    "CFC11": {"name": "CCl3F (CFC-11)",     "bands": [[848, 1.0], [1085, 0.5]]},
+    "C2H6":  {"name": "Ethane",             "bands": [[822, 0.2], [2954, 1.0]]},
+    "HCl":   {"name": "Hydrogen Chloride",  "bands": [[2886, 1.0]]},
+    "HNO3":  {"name": "Nitric Acid",        "bands": [[896, 0.4], [1325, 0.7], [1710, 1.0]]},
+    "H2CO":  {"name": "Formaldehyde",       "bands": [[1746, 1.0], [2783, 0.5], [2843, 0.5]]}
+  }
+}

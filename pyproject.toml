@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecas"
+version = "0.8.0"
+description = "Exoplanetary Characterization & Astrochemistry Suite"
+requires-python = ">=3.10"
+dependencies = ["PyQt6>=6.5", "pyqtgraph>=0.13.3", "numpy>=1.24", "scipy>=1.10", "astropy>=6.0"]
+
+[project.optional-dependencies]
+viewer3d = ["pyvista>=0.43", "pyvistaqt>=0.11"]
+archives = ["astroquery>=0.4.7"]
+test = ["pytest>=7"]
+
+[project.scripts]
+ecas = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
