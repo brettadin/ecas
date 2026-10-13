@@ -1095,3 +1095,55 @@ def test_single_transit_with_known_period():
     assert res.params.a_rs == pytest.approx(9.0, rel=0.3) and res.n_transits == 1
     with pytest.raises(TransitError):
         analyze_lightcurve(LightCurve(t, 1 + rng.normal(0, 6e-4, t.size)), known_period=3.2)   # no dip: refuses
+
+
+# ------------------------------------------ regression: single-transit & uncertainty handling
+from app.core.timeseries import SpectralTimeSeries  # noqa: E402
+def _single_transit_case(seed=0, noise=0.0008, drift=0.0):
+    """One ~1.3 h transit in a 4 h JWST-like window, with LHS 1140 b-like host star (synthetic test data)."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(2054) * (0.17 / 2054)
+    truth = TransitParams(0.092, 24.74, 0.05, 94.1, 0.2)
+    model = transit_model(t, truth)
+    if drift:
+        model = model * (1.0 + drift * (t - t.mean()) / 0.085)
+    return t, truth, model + rng.normal(0.0, noise, t.size)
+
+
+def test_single_transit_depth_recovered_with_and_without_drift():
+    """The depth must not be biased by normalising on the in-transit median, nor by a slow drift."""
+    st = StellarParams(0.216, 0.184, 3096)
+    t, truth, flux = _single_transit_case()
+    res = analyze_lightcurve(LightCurve(t, flux), st, detrend_window_days=None, known_period=24.74)
+    assert res.params.rp_rs == pytest.approx(truth.rp_rs, rel=0.03)
+    t, truth, flux = _single_transit_case(drift=0.002)
+    res = analyze_lightcurve(LightCurve(t, flux), st, detrend_window_days=None, known_period=24.74)
+    assert res.params.rp_rs == pytest.approx(truth.rp_rs, rel=0.03)
+    assert any("linear baseline" in n for n in res.notes)
+
+
+def test_uncertainty_column_on_wrong_scale_does_not_reject_a_real_transit():
+    st = StellarParams(0.216, 0.184, 3096)
+    t, _, flux = _single_transit_case()
+    res = analyze_lightcurve(LightCurve(t, flux, np.full(t.size, 0.0008 * 1000.0)), st,
+                             detrend_window_days=None, known_period=24.74)
+    assert res.params.rp_rs == pytest.approx(0.05, rel=0.05)
+    assert any("uncertainty column" in n for n in res.notes)
+
+
+def test_failure_message_reports_candidate_and_how_to_proceed():
+    st = StellarParams(0.216, 0.184, 3096)
+    t = np.arange(2054) * (0.17 / 2054)
+    noise_only = 1.0 + np.random.default_rng(3).normal(0.0, 0.0008, t.size)
+    with pytest.raises(TransitError, match="Detection SNR"):
+        analyze_lightcurve(LightCurve(t, noise_only), st, detrend_window_days=None, known_period=24.74)
+
+
+def test_extracted_depth_errors_follow_the_data_not_the_error_column():
+    t, truth, _ = _single_transit_case()
+    rng = np.random.default_rng(1)
+    wl = np.linspace(2.44, 5.2, 300)
+    flux = 1.0 + (transit_model(t, truth) - 1.0)[:, None] + rng.normal(0.0, 0.001, (t.size, wl.size))
+    honest = SpectralTimeSeries(t, wl, flux, np.full(flux.shape, 0.001), {}).transmission_spectrum(truth)
+    inflated = SpectralTimeSeries(t, wl, flux, np.full(flux.shape, 1.0), {}).transmission_spectrum(truth)
+    assert np.median(inflated.depth_err) == pytest.approx(np.median(honest.depth_err), rel=0.05)

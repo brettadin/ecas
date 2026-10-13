@@ -325,6 +325,7 @@ def analyze_lightcurve(
     period_range: Optional[Tuple[float, float]] = None,
     min_snr: float = 10.0,
     known_period: Optional[float] = None,
+    fit_baseline: Optional[bool] = None,
 ) -> TransitResult:
     """
     Detrend, find the period with Box Least Squares, then refine (t0, P, Rp/R*, a/R*, b)
@@ -336,6 +337,10 @@ def analyze_lightcurve(
 
     ``detrend_window_days=None`` skips detrending (use for already-flat data).  The window
     should exceed ~3x the transit duration or the dip will be partly removed.
+
+    ``fit_baseline`` adds a linear time trend multiplying the transit model. It defaults to on for
+    single-transit analysis (``known_period`` given), where slow drifts are the usual systematic and
+    bias the depth; off otherwise, where detrending handles the trend over many transits.
     """
     t = lc.time
     span_check = float(t[-1] - t[0])
@@ -373,6 +378,17 @@ def analyze_lightcurve(
         if not known_period > 0:
             raise TransitError("known_period must be positive")
         period0, t00, dur0, depth0, snr = _single_transit_guess(t, f, err, float(known_period))
+        # The overall median is a poor baseline when the transit covers a large part of a short window
+        # (common for single JWST visits): it sits inside the dip and biases the depth. Re-normalise by
+        # the out-of-transit level instead.
+        out_of_transit = np.abs(t - t00) > 0.75 * dur0
+        if out_of_transit.sum() >= 20:
+            factor = float(np.median(lc.flux[out_of_transit]) / np.median(lc.flux))
+            if factor > 0 and np.isfinite(factor):
+                f = f / factor
+                err = err / factor
+                # the detection SNR must be measured on the corrected normalisation too
+                period0, t00, dur0, depth0, snr = _single_transit_guess(t, f, err, float(known_period))
     else:
         p_lo, p_hi = period_range or (max(0.4, 5 * float(np.median(np.diff(t)))), min(span / 2.0, 60.0))
         if p_hi <= p_lo:
@@ -382,7 +398,13 @@ def analyze_lightcurve(
         durations = durations[durations < 0.5 * p_lo]
         period0, t00, dur0, depth0, snr = _bls_search(t, f, err, p_lo, p_hi, durations)
     if snr < min_snr:                       # pure noise reaches BLS SNR ~8 over thousands of trial periods
-        raise TransitError(f"no significant transit found (best SNR {snr:.1f} < {min_snr:g})")
+        where = (f"period {period0:.4f} d" if known_period is None else f"transit near t = {t00:.5f} d")
+        raise TransitError(
+            f"no significant transit found. The strongest candidate ({where}) is a dip of about "
+            f"{depth0 * 1e6:,.0f} ppm lasting about {dur0 * 24:.2f} h, with SNR {snr:.1f}; the required "
+            f"SNR is {min_snr:g}. A dip this shallow can be a real transit, or noise, or a drift. Look at the "
+            "light-curve plot: if the dip is clearly a transit, lower 'Detection SNR' in the Photometry panel "
+            "and analyze again.")
 
     if not (np.isfinite([period0, t00, dur0, depth0]).all() and dur0 > 0 and period0 > 0 and depth0 > 0):
         raise TransitError("the period search returned no usable transit (zero duration or depth); "
@@ -391,34 +413,87 @@ def analyze_lightcurve(
     a0 = float(np.clip(period0 / (np.pi * dur0), 2.0, 150.0))
     u1, u2 = limb_darkening
 
+    if fit_baseline is None:
+        fit_baseline = known_period is not None
+    tc = 0.5 * (t.min() + t.max())
+    half = max(0.5 * (t.max() - t.min()), 1e-9)
+    u = (t - tc) / half                                       # time scaled to [-1, 1] over the data
+
     def build(x):
         return TransitParams(x[0], x[1], x[2], x[3], x[4], u1, u2)
 
-    def resid(x):
-        return (transit_model(t, build(x)) - f) / err
+    def full_model(x):
+        m = transit_model(t, build(x))
+        return m * (x[6] + x[5] * u) if fit_baseline else m
 
-    x0 = np.array([t00, period0, k0, a0, 0.3])
+    # Single transit + known period: Kepler's third law with the host star's mass and radius gives the
+    # expected a/R*. Use it as a Gaussian prior (10 % width). Without it, a/R*, b and Rp/R* trade off
+    # badly for one short transit and the depth can be wrong.
+    a_expected = None
+    if known_period is not None and stellar.mass_msun > 0 and stellar.radius_rsun > 0:
+        a_m = (G_SI * stellar.mass_msun * M_SUN_KG * (float(known_period) * DAY_S) ** 2 / (4 * np.pi**2)) ** (1 / 3)
+        a_expected = a_m / (stellar.radius_rsun * R_SUN_M)
+    prior_sigma = 0.1 * a_expected if a_expected else None
+
+    def resid(x):
+        r = (full_model(x) - f) / err
+        if a_expected:
+            r = np.concatenate([r, [(x[3] - a_expected) / prior_sigma]])
+        return r
+
+    x0 = [t00, period0, k0, a0, 0.3]
     p_tol = 1e-7 if known_period is not None else 1e-2          # fixed period for single transits
     lo = [t00 - dur0, period0 * (1 - p_tol), 0.002, 1.5, 0.0]
     hi = [t00 + dur0, period0 * (1 + p_tol), 0.5, 300.0, 1.0 + k0]
-    try:
-        sol = least_squares(resid, x0, bounds=(lo, hi), x_scale=[dur0, max(period0 * p_tol * 0.1, 1e-9), 0.01, 1.0, 0.1])
-    except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
-        raise TransitError(f"the transit model fit failed ({exc}); the data may not be a light curve") from exc
+    xs = [dur0, max(period0 * p_tol * 0.1, 1e-9), 0.01, 1.0, 0.1]
+    names = ["t0", "period", "rp_rs", "a_rs", "b"]
+    if fit_baseline:
+        x0 += [0.0, 1.0]; lo += [-0.5, 0.9]; hi += [0.5, 1.1]; xs += [0.01, 0.01]
+        names += ["baseline_slope", "baseline_level"]
+    # The shape parameters (a/R*, b) are correlated, so one starting point can settle in a poor local
+    # minimum. Fit from several starting points and keep the best (lowest chi-square).
+    starts = [(a0, 0.3)]
+    if a_expected:
+        starts += [(a_expected, 0.2), (a_expected, 0.5)]
+    starts += [(a0 * 0.8, 0.5), (a0 * 1.2, 0.1)]
+    best = None
+    failure = None
+    for a_start, b_start in starts:
+        x_start = list(x0)
+        x_start[3] = float(np.clip(a_start, 1.6, 299.0))
+        x_start[4] = float(np.clip(b_start, 0.01, 0.99 + k0))
+        try:
+            trial = least_squares(resid, np.array(x_start), bounds=(lo, hi), x_scale=xs,
+                                  xtol=1e-10, ftol=1e-10, gtol=1e-10)
+        except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+            failure = exc
+            continue
+        if best is None or trial.cost < best.cost:
+            best = trial
+    if best is None:
+        raise TransitError(f"the transit model fit failed ({failure}); the data may not be a light curve")
+    sol = best
     best = build(sol.x)
-    model = transit_model(t, best)
-    dof = max(f.size - 5, 1)
+    model = full_model(sol.x)
+    pure = transit_model(t, best)                             # the transit alone, for counting in-transit points
+    dof = max(f.size - len(x0), 1)
     red = float(np.sum(((f - model) / err) ** 2) / dof)
     cov = np.linalg.pinv(sol.jac.T @ sol.jac) * max(red, 1.0)
     sig = np.sqrt(np.clip(np.diag(cov), 0, None))
-    errs = dict(zip(("t0", "period", "rp_rs", "a_rs", "b"), map(float, sig)))
+    errs = dict(zip(names, map(float, sig)))
+    if a_expected:
+        notes.append(f"a/R* prior from the host star (expected {a_expected:.1f} from M*, R*, P; 10 % width): "
+                     "a/R*, b and Rp/R* are constrained by the star, not by the transit shape alone")
+    if fit_baseline:
+        notes.append(f"linear baseline fitted (level {sol.x[6]:.5f}, slope {sol.x[5]:+.4f} per half-span of "
+                     "data): slow drifts are modelled, not mistaken for the transit")
 
-    n_in = int(np.count_nonzero(model < 1.0 - 1e-9))
+    n_in = int(np.count_nonzero(pure < 1.0 - 1e-9))
     if n_in < 5:
         raise TransitError(f"only {n_in} data points fall inside the fitted transit - the sampling is "
                            "far too coarse for this signal to be a transit (is this a spectrum?)")
     # "Transits seen" = orbital epochs in which the DATA really dip (not merely epochs the model predicts)
-    in_t = model < 1.0 - 0.5 * best.rp_rs**2
+    in_t = pure < 1.0 - 0.5 * best.rp_rs**2
     epoch = np.floor((t[in_t] - best.t0) / best.period + 0.5).astype(int)
     _, inv = np.unique(epoch, return_inverse=True)
     mean_deficit = np.bincount(inv, weights=1.0 - f[in_t]) / np.maximum(np.bincount(inv), 1)
@@ -499,7 +574,7 @@ def extract_transmission_spectrum(
         resid = signal - s[:, None] * depth[None, :]
         dof = np.maximum(good.sum(axis=0) - 1, 1)
         reduced_chi2 = (weights * resid**2).sum(axis=0) / dof
-        sigma = np.sqrt(1.0 / denom) * np.sqrt(np.maximum(1.0, reduced_chi2))
+        sigma = np.sqrt(1.0 / denom) * np.sqrt(np.maximum(reduced_chi2, 1e-12))   # rescale to the data, both ways
     return DepthSpectrum(wavelength_um, depth, sigma)
 
 

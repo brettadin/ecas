@@ -2,6 +2,34 @@
 
 Newest first.  Versions follow `0.PHASE.PATCH`.  Every entry says what changed, why, and how it was verified.
 
+## Unreleased — Single-transit fitting and extraction fixes (Oct 2026)
+**Fixed**
+- Single-transit light curves were normalised by their overall median. When the transit covers much of a
+  short window (typical for one JWST visit) the median sits inside the dip, which biased the depth low and
+  the detection SNR with it. Normalisation now uses the out-of-transit level, and the SNR is recomputed on it.
+- Detection (single-transit and BLS) used the file's uncertainty column directly. A column on a different
+  scale from the real noise rejected visible transits (SNR ≈ 0). The measured point-to-point scatter is now
+  used when the column disagrees with it by more than 3×, and the run notes say so.
+- Extracted transit-depth uncertainties were only ever scaled up. They are now scaled to the residuals in
+  both directions, so an oversized error column no longer produces absurd error bars.
+- Extraction and the time-correlated-noise check run the transit analysis themselves when needed, and report
+  the real reason if it fails, instead of pointing at archive values the planet record lacks.
+**Added**
+- Linear baseline (level and slope) in single-transit fits, on by default there. Recovers the depth under a
+  0.2% linear drift; without it the depth was biased by ~40%.
+- Stellar-density prior on a/R★ for single transits, from M★, R★ and the period (Kepler's third law, 10 % width).
+  It is recorded in the analysis notes.
+- Several starting points for the shape fit, keeping the best.
+- 'Detection SNR' control in the Photometry panel, with a failure message that reports the strongest
+  candidate (depth, duration, SNR) and what to try.
+**Verified**
+- Synthetic tests (not results): noise-free recovery of the injected shape; depth within 1 % across noise
+  seeds; drift recovered; wrong-scale error column accepted; extracted error bars independent of the error
+  column. Four regression tests added. Full suite: 155 passed.
+**Known limits**
+- A sinusoidal drift with a period similar to the transit cannot be removed by a linear baseline.
+- The a/R★ prior assumes a circular orbit and the archive's stellar mass and radius.
+
 ## Unreleased — Conditional retrieval contract and edge diagnostics (Oct 2026)
 **Added**
 - Formalized the first retrieval scope: one gas VMR plus a fitted constant depth

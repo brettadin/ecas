@@ -312,14 +312,15 @@ class _AnalysisWorker(QObject):
     failed = pyqtSignal(str)
 
     def __init__(self, lc: LightCurve, stellar: StellarParams, window: Optional[float],
-                 known_period: Optional[float] = None):
+                 known_period: Optional[float] = None, min_snr: float = 10.0):
         super().__init__()
-        self._args = (lc, stellar, window, known_period)
+        self._args = (lc, stellar, window, known_period, min_snr)
 
     def run(self) -> None:
-        lc, stellar, window, known = self._args
+        lc, stellar, window, known, min_snr = self._args
         try:
-            self.done.emit(analyze_lightcurve(lc, stellar, detrend_window_days=window, known_period=known))
+            self.done.emit(analyze_lightcurve(lc, stellar, detrend_window_days=window, known_period=known,
+                                              min_snr=min_snr))
         except TransitError as exc:
             self.failed.emit(str(exc))
         except Exception as exc:                              # never let a worker die silently
@@ -543,7 +544,10 @@ class TransitPanel(QWidget):
         self._spin_w = self._spin("Detrend window", 1.0, 0.0, 20.0, " d (0 = off)", 2)
         for lbl, spin in (self._spin_r, self._spin_m, self._spin_t):
             spin.valueChanged.connect(self._on_stellar_changed)
-        for lbl, spin in (self._spin_r, self._spin_m, self._spin_t, self._spin_w):
+        self._spin_snr = self._spin("Detection SNR", 10.0, 3.0, 50.0, "", 1)
+        self._spin_snr[1].setToolTip("Minimum signal-to-noise for a transit to be accepted. Lower it only if "
+                                     "the light curve plainly shows a dip; the default protects against noise.")
+        for lbl, spin in (self._spin_r, self._spin_m, self._spin_t, self._spin_w, self._spin_snr):
             r = QHBoxLayout()
             r.addWidget(lbl)
             r.addWidget(spin)
@@ -876,7 +880,7 @@ class TransitPanel(QWidget):
         if blocking:
             try:
                 self._apply_result(analyze_lightcurve(self._lc, self._stellar(), detrend_window_days=window,
-                                                      known_period=known))
+                                                      known_period=known, min_snr=self._spin_snr[1].value()))
             except TransitError as exc:
                 self._on_analysis_failed(str(exc))
             return
@@ -884,7 +888,7 @@ class TransitPanel(QWidget):
         self._btn_analyze.setText("Analyzing…")
         self._report.setPlainText("Analyzing… (period search runs in the background)")
         self._thread = QThread(self)
-        self._worker = _AnalysisWorker(self._lc, self._stellar(), window, known)
+        self._worker = _AnalysisWorker(self._lc, self._stellar(), window, known, self._spin_snr[1].value())
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.done.connect(self._on_worker_done)
