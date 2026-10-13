@@ -302,6 +302,14 @@ def test_gui_inverse_workflow_offscreen():
 
     app = QApplication.instance() or QApplication([])
     cfg = ConfigManager.load()
+    # SO2 is an enabled registry gas, so the fitter would simply absorb the injected SO2
+    # band. Disable it here so the injected band stays an unmodelled anomaly (the path
+    # this test is about).
+    raw = ConfigManager.to_dict(cfg)
+    for g in raw["gases"]:
+        if g["id"] == "SO2":
+            g["enabled"] = False
+    cfg = ConfigManager.from_dict(raw, base_dir=cfg.base_dir)
     eng, _ = build_engine(cfg)
     win = MainWindow(eng, cfg.physics)
     win.show()
@@ -928,6 +936,13 @@ def test_gui_identify_workspace_citations_and_report(tmp_path):
     from app.ui.sources_dialog import SourcesDialog
 
     cfg = ConfigManager.load()
+    # SO2 is an enabled simulator gas (mock-sourced). Disable it here so the injected SO2
+    # band is unexplained until a real reference is imported below.
+    raw = ConfigManager.to_dict(cfg)
+    for g in raw["gases"]:
+        if g["id"] == "SO2":
+            g["enabled"] = False
+    cfg = ConfigManager.from_dict(raw, base_dir=cfg.base_dir)
     eng, _ = build_engine(cfg)
     win = MainWindow(eng, cfg.physics, enable_3d=False, library_dir=tmp_path / "lib")
     win.show()

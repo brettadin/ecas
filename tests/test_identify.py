@@ -1,6 +1,5 @@
 """Tests for the citation registry, reference library and multi-molecule identification."""
 import sys
-import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +15,7 @@ from app.core.identify import IdentifyError, decompose, rank_references
 from app.core.library import (LibraryError, ReferenceLibrary, ReferenceSpectrum,
                               fetch_nist_jcamp, hapi_cross_section_reference,
                               import_exomol_transitions, import_jcamp, import_nist_jcamp,
-                              nist_webbook_url, reference_from_arrays, resolve_nist_identifier)
+                              nist_webbook_url, reference_from_arrays)
 from app.core.physics import lorentzian
 from app.core.sources import SOURCES, CitationLog
 
@@ -113,7 +112,7 @@ def test_nist_webbook_lookup_is_injectable_and_preserves_provenance():
         return payload
 
     url = nist_webbook_url("C7446095", index=2)
-    assert "JCAMP=C7446095" in url and "Index=2" in url and "Type=IR" in url and "Units=SI" not in url
+    assert "JCAMP=C7446095" in url and "Index=2" in url and "IR-SPEC" in url
     assert "Type=UVVis" in nist_webbook_url("C287923", spectrum="uvvis")
     fetched_url, text = fetch_nist_jcamp("7446-09-5", 2, fetch=fake_fetch)
     assert fetched_url == seen[0] and text == payload
@@ -133,51 +132,6 @@ def test_nist_uvvis_jcamp_is_imported_as_a_shape(tmp_path):
     ref = import_nist_jcamp("C287923", spectrum="uvvis", fetch=lambda _: payload)
     assert ref.meta["spectrum"] == "uvvis" and ref.y_kind == "uv_log_epsilon"
     assert not ref.quantitative and ref.coverage_cm1 == pytest.approx((1e7 / 900.0, 1e7 / 250.0), rel=1e-3)
-
-
-def test_nist_name_lookup_resolves_before_fetching_spectrum():
-    payload = _jcamp("TRANSMITTANCE", np.linspace(1.0, 0.4, 16))
-    calls = []
-
-    def fake_fetch(url):
-        calls.append(url)
-        if "Name=water" in url:
-            return ('<a href="/cgi/cbook.cgi?ID=C7732185">Water</a>'
-                    '<a href="/cgi/cbook.cgi?ID=C13670172">Heavy water</a>'
-                    '<a href="/cgi/cbook.cgi?ID=C14314422">Water-18O</a>')
-        return payload
-
-    resolved, query = resolve_nist_identifier("water", fetch=fake_fetch)
-    assert resolved == "7732185" and "Name=water" in query
-    calls.clear()
-    ref = import_nist_jcamp("water", fetch=fake_fetch)
-    assert ref.meta["nist_resolved_id"] == "7732185"
-    assert len(calls) == 2 and "JCAMP=C7732185" in calls[1]
-
-
-def test_nist_network_requests_identify_ecas_user_agent(monkeypatch):
-    seen = {}
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b"<html>ok</html>"
-
-    def fake_urlopen(request, timeout):
-        seen["request"] = request
-        seen["timeout"] = timeout
-        return Response()
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    from app.core.library import _fetch_nist_text
-    assert _fetch_nist_text("https://webbook.nist.gov/test") == "<html>ok</html>"
-    assert seen["request"].get_header("User-agent").startswith("ECAS/")
-    assert seen["timeout"] == 30
 
 
 def test_hapi_adapter_marks_sampled_cross_section_quantitative():

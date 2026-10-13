@@ -360,15 +360,14 @@ class IdentifyPanel(QWidget):
         return True
 
     def _on_nist(self) -> None:
-        identifier, accepted = QInputDialog.getText(self, "NIST WebBook", "Chemical name or CAS/WebBook ID:")
+        identifier, accepted = QInputDialog.getText(self, "NIST WebBook", "CAS/WebBook ID:")
         if not accepted or not identifier.strip():
             return
         spectrum, accepted = QInputDialog.getItem(
             self, "NIST WebBook", "Spectrum collection:", ["IR", "UV/Vis"], 0, False)
         if not accepted:
             return
-        index, accepted = QInputDialog.getInt(
-            self, "NIST WebBook", "Spectrum index (0 = first record):", 0, 0, 999)
+        index, accepted = QInputDialog.getInt(self, "NIST WebBook", "Spectrum index:", 0, 0, 999)
         if not accepted:
             return
         try:
