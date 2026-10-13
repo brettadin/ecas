@@ -18,7 +18,7 @@ from ..core.archives import (
 )
 from ..core.timeseries import load_x1dints
 from .tasks import run_async
-from .theme import ERR, OK, muted, primary
+from .theme import ERR, OK, mono_font, muted, primary
 
 CACHE_DIR = Path.home() / ".ecas" / "cache"
 
@@ -56,9 +56,7 @@ class PlanetLookupDialog(QDialog):
         row.addWidget(self._btn_fetch)
         self._summary = QPlainTextEdit()
         self._summary.setReadOnly(True)
-        mono = QFont("monospace")
-        mono.setPointSizeF(9.0)
-        self._summary.setFont(mono)
+        self._summary.setFont(mono_font())
         self._status = QLabel("")
         self._status.setWordWrap(True)
         self._btn_use = QPushButton("Use these values")

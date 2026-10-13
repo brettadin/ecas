@@ -18,7 +18,8 @@ import pyqtgraph as pg
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
+    QAbstractItemView, QCheckBox, QDoubleSpinBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QListWidget,
+    QScrollArea,
     QListWidgetItem, QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
     QTabWidget, QVBoxLayout, QWidget, QInputDialog, QSizePolicy,
 )
@@ -117,7 +118,7 @@ class IdentifyPanel(QWidget):
     # ------------------------------------------------------------------- controls
     def _build_controls(self) -> QWidget:
         box = QWidget()
-        box.setFixedWidth(340)
+        box.setMinimumWidth(360)
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 0, 0, 0)
 
@@ -202,7 +203,12 @@ class IdentifyPanel(QWidget):
             run.body_layout().addWidget(w)
         lay.addWidget(run)
         lay.addStretch(1)
-        return box
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(box)
+        scroll.setMinimumWidth(380)
+        return scroll
 
     # ----------------------------------------------------------------- library
     def _all_refs(self) -> ReferenceLibrary:

@@ -22,7 +22,7 @@ import pyqtgraph as pg
 from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont, QPen
 from PyQt6.QtWidgets import (
-    QDoubleSpinBox, QFileDialog, QGraphicsEllipseItem, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+    QDoubleSpinBox, QScrollArea, QFrame, QFileDialog, QGraphicsEllipseItem, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
     QPlainTextEdit, QPushButton, QSlider, QSpinBox, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -41,7 +41,7 @@ from ..core.transit import (
     load_lightcurve_csv, orbit_positions, transit_model,
 )
 from .mappings import LogMapping
-from .theme import primary, muted
+from .theme import mono_font, primary, muted
 
 PLANET_COLOR = "#4fc3f7"
 
@@ -63,7 +63,7 @@ def teff_to_hex(teff_k: float) -> str:
 
 def _caption(text: str) -> pg.TextItem:
     item = pg.TextItem(text, color="#9aa7b8", anchor=(0.0, 1.0))
-    item.setFont(QFont("monospace", 8))
+    item.setFont(mono_font())
     return item
 
 
@@ -267,7 +267,7 @@ class Viewport3D(QWidget):
         if not self.available:
             note = QLabel(self.reason)
             note.setWordWrap(True)
-            note.setStyleSheet("color: #9aa7b8; font-size: 10px;")
+            note.setStyleSheet("color: #9aa7b8;")
             self.fallback = OrbitView2D()
             lay.addWidget(note)
             lay.addWidget(self.fallback, 1)
@@ -469,7 +469,7 @@ class TransitPanel(QWidget):
         self._speed_label.setMinimumWidth(115)
         self._clock = QLabel("t = –")
         self._clock.setMinimumWidth(330)
-        self._clock.setFont(QFont("monospace"))
+        self._clock.setFont(mono_font())
         self._scale = QDoubleSpinBox()
         self._scale.setRange(1.0, 40.0)
         self._scale.setValue(1.0)
@@ -515,7 +515,7 @@ class TransitPanel(QWidget):
     # ------------------------------------------------------------------- controls
     def _build_controls(self) -> QWidget:
         box = QWidget()
-        box.setFixedWidth(360)
+        box.setMinimumWidth(380)
         lay = QVBoxLayout(box)
 
         phot = QGroupBox("Photometry")
@@ -554,8 +554,8 @@ class TransitPanel(QWidget):
         p_lay.addWidget(self._btn_analyze)
         self._report = QPlainTextEdit()
         self._report.setReadOnly(True)
-        self._report.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self._report.setFont(QFont("monospace", 9))
+        self._report.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self._report.setFont(mono_font())
         self._report.setMinimumHeight(250)
         p_lay.addWidget(self._report)
 
@@ -589,13 +589,13 @@ class TransitPanel(QWidget):
         b_sfetch.clicked.connect(self._on_fetch_spectral_series)
         b_smock.clicked.connect(self._on_mock_series)
         row_s.addWidget(b_sload, 1)
-        row_s.addWidget(b_sfetch)
-        row_s.addWidget(b_smock)
+        row_s2 = QHBoxLayout()
+        row_s2.addWidget(b_sfetch, 1)
+        row_s2.addWidget(b_smock)
         self._btn_fetch_spectral = b_sfetch
         self._series_label = QLabel("No spectral time series loaded.")
         self._series_label.setWordWrap(True)
         muted(self._series_label)
-        self._series_label.setMinimumHeight(52)
         bin_row = QHBoxLayout()
         bin_row.addWidget(QLabel("Wavelength bin size"))
         self._bin_size = QSpinBox()
@@ -629,6 +629,7 @@ class TransitPanel(QWidget):
             "Conditional 1D pRT profile scan; other settings and gases are fixed, with a fitted depth offset.")
         self._btn_abundance_scan.clicked.connect(self._on_scan_abundance)
         t_lay.addLayout(row_s)
+        t_lay.addLayout(row_s2)
         t_lay.addWidget(self._series_label)
         t_lay.addLayout(bin_row)
         t_lay.addWidget(self._btn_extract)
@@ -642,7 +643,12 @@ class TransitPanel(QWidget):
         lay.addWidget(ser)
         lay.addWidget(spec)
         lay.addStretch(1)
-        return box
+        scroll = QScrollArea()                      # the sidebar scrolls rather than cutting text off
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(box)
+        scroll.setMinimumWidth(400)
+        return scroll
 
     @staticmethod
     def _spin(label: str, value: float, lo: float, hi: float, suffix: str, decimals: int):
@@ -1018,20 +1024,30 @@ class TransitPanel(QWidget):
         self._spec_caption.setPos(float(wl.min()), vb.viewRange()[1][1])
 
     def _extraction_params(self) -> TransitParams:
-        """Best available transit geometry: own analysis > archive ephemeris > the mock's truth."""
+        """Best available transit geometry: own analysis > archive ephemeris > the mock's truth.
+
+        If no analysis has been run yet, run it now, so the user is not asked to press a second button.
+        """
+        if self._params is None and self._lc is not None:
+            self.analyze(blocking=True)                 # reports its own failure reason if it fails
         if self._params is not None:
             return self._params
         series = self._series
+        archive_problem = ""
         if self._planet is not None and series is not None:
             kind, off = str(series.meta.get("time_kind", "")), float(series.meta.get("time_offset", 0.0))
             if kind in ("BJD_TDB", "MJD_UTC"):
                 off_bjd = off if kind == "BJD_TDB" else off + 2400000.5
                 mid = off_bjd + 0.5 * float(series.time[0] + series.time[-1])
-                return transit_params_from_archive(self._planet, mid, off_bjd)
+                try:
+                    return transit_params_from_archive(self._planet, mid, off_bjd)
+                except ArchiveError as exc:
+                    archive_problem = str(exc)
         if self._truth is not None:
             return self._truth
-        raise TransitError("Analyze the transit first (press 'Analyze transit'), or look up the planet in the "
-                           "archive so its ephemeris can be used for this single transit.")
+        detail = f" The archive also lacks what it needs: {archive_problem}" if archive_problem else ""
+        raise TransitError("The transit geometry could not be determined from your data (see the report above "
+                           "for why the analysis failed)." + detail)
 
     def _on_extract(self) -> None:
         if self._series is None:

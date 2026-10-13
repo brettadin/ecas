@@ -208,6 +208,7 @@ class TransitResult:
     model: FloatArray
     chi2_reduced: float
     n_transits: int
+    notes: List[str] = field(default_factory=list)
 
     def with_stellar(self, stellar: "StellarParams") -> "TransitResult":
         """Same fit, new host-star inputs: only the physical quantities are recomputed."""
@@ -215,7 +216,7 @@ class TransitResult:
 
     def summary_lines(self) -> List[str]:
         p, e = self.params, self.param_errors
-        return [
+        return [f"Note: {n}" for n in self.notes] + [
             f"Period            {p.period:.5f} ± {e['period']:.5f} d",
             f"Mid-transit t0    {p.t0:.5f} ± {e['t0']:.5f} d",
             f"Depth (Rp/R*)²    {self.depth * 1e6:,.0f} ppm",
@@ -310,6 +311,12 @@ def _single_transit_guess(t, f, err, period):
     return period, float(t[i]), dur, depth, float(snr)
 
 
+def _empirical_scatter(f: FloatArray) -> float:
+    """Point-to-point noise of ``f`` (robust), independent of any uncertainty column."""
+    d = np.diff(f)
+    return max(float(1.4826 * np.median(np.abs(d - np.median(d))) / np.sqrt(2.0)), 1e-9)
+
+
 def analyze_lightcurve(
     lc: LightCurve,
     stellar: StellarParams = StellarParams(),
@@ -338,12 +345,28 @@ def analyze_lightcurve(
                            "curve (is it a spectrum?). Use the Spectroscopy tab for spectra.")
     if np.ptp(lc.flux) <= 0 or not np.median(lc.flux) > 0:
         raise TransitError("flux must be positive and not constant")
+    notes: List[str] = []
     f = lc.flux / np.median(lc.flux)
+    if detrend_window_days and detrend_window_days > span_check / 3.0:
+        notes.append(f"detrending skipped: the {detrend_window_days:g} d window is longer than a third of the "
+                     f"{span_check:.3f} d span, so it would remove the transit signal itself")
+        detrend_window_days = None
     if detrend_window_days:
         f = detrend(t, f, detrend_window_days)
     err = lc.flux_err / np.median(lc.flux) if lc.flux_err is not None else None
+    sigma_scatter = _empirical_scatter(f)
     if err is None:                                            # robust scatter -> uniform errors
-        err = np.full_like(f, 1.4826 * np.median(np.abs(f - np.median(f))) + 1e-9)
+        err = np.full_like(f, sigma_scatter)
+    else:
+        # The detection thresholds (BLS and single-transit SNR) scale with the uncertainty column.
+        # If that column is on a different scale from the real point-to-point scatter, a transit that
+        # is plainly visible gets an SNR near zero. Trust the measured scatter in that case.
+        ratio = float(np.median(err)) / sigma_scatter
+        if ratio > 3.0 or ratio < 1.0 / 3.0:
+            notes.append(f"the uncertainty column is {ratio:.3g}x the measured point-to-point scatter "
+                         f"({sigma_scatter:.2e}); the measured scatter was used instead. Check the "
+                         "error column's units.")
+            err = np.full_like(f, sigma_scatter)
 
     span = t.max() - t.min()
     if known_period is not None:
@@ -408,7 +431,7 @@ def analyze_lightcurve(
         duration_hours=best.duration_days * 24.0, bls_period=period0, bls_snr=snr,
         **_physical(best, stellar),
         inclination_deg=best.inclination_deg,
-        time=t, flux=f, model=model, chi2_reduced=red, n_transits=n_transits,
+        time=t, flux=f, model=model, chi2_reduced=red, n_transits=n_transits, notes=notes,
     )
 
 

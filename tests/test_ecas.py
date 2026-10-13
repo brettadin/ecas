@@ -513,7 +513,7 @@ def test_gui_project_roundtrip(tmp_path):
     a.close(); b.close()
 
 
-def test_transmission_spectrum_plot_uses_measured_depths():
+def test_gui_transmission_spectrum_plot_uses_measured_depths():
     app = _qapp()
     from app.ui.main_window import MainWindow
 
@@ -572,7 +572,7 @@ def test_transmission_spectrum_plot_uses_measured_depths():
     win.close()
 
 
-def test_local_spectral_matrix_populates_time_spectrum_and_transit_chart(tmp_path):
+def test_gui_local_spectral_matrix_populates_time_spectrum_and_transit_chart(tmp_path):
     app = _qapp()
     from app.ui.main_window import MainWindow
 
@@ -675,7 +675,7 @@ def test_exoplanet_archive_flux_csv_with_empty_errors_and_text_columns(tmp_path)
     assert "normalise to continuum" in " ".join(observation.meta["import_notes"])
 
 
-def test_emission_flux_ui_uses_blackbody_not_transmission_fit(tmp_path):
+def test_gui_emission_flux_ui_uses_blackbody_not_transmission_fit(tmp_path):
     app = _qapp()
     from app.ui.main_window import MainWindow
 

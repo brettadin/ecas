@@ -33,7 +33,36 @@ def configure_plots(use_opengl: bool = False) -> None:
     pg.setConfigOptions(antialias=False, background=PLOT_BG, foreground=MUTED, useOpenGL=use_opengl)
 
 
-def apply_theme(app: QApplication) -> None:
+BASE_POINT_SIZE = 10.0
+TEXT_SCALES = {"Small": 0.9, "Normal": 1.15, "Large": 1.4, "Extra large": 1.7}
+DEFAULT_TEXT_SCALE = "Normal"
+
+
+def mono_font() -> QFont:
+    """Monospace font at the current application text size (for numbers and reports)."""
+    font = QFont(QApplication.font())
+    font.setFamily("Consolas")
+    font.setStyleHint(QFont.StyleHint.Monospace)
+    return font
+
+
+def apply_text_scale(app: QApplication, scale: float) -> None:
+    """Scale every text element: application font, and the tick and axis labels of all charts."""
+    font = QFont(app.font())
+    font.setPointSizeF(BASE_POINT_SIZE * float(scale))
+    app.setFont(font)
+    for widget in app.allWidgets():
+        if isinstance(widget, pg.PlotWidget):
+            for name in ("bottom", "left", "top", "right"):
+                axis = widget.getAxis(name)
+                axis.setStyle(tickFont=font)
+                try:
+                    axis.label.item.setFont(font)
+                except AttributeError:
+                    pass
+
+
+def apply_theme(app: QApplication, text_scale: Optional[float] = None) -> None:
     """Fusion style + dark palette + stylesheet."""
     app.setStyle("Fusion")
     pal = QPalette()
@@ -47,7 +76,8 @@ def apply_theme(app: QApplication) -> None:
     app.setPalette(pal)
     font = QFont("Inter")
     font.setStyleHint(QFont.StyleHint.SansSerif)
-    font.setPointSizeF(9.5)
+    font.setPointSizeF(BASE_POINT_SIZE * (text_scale if text_scale is not None
+                                          else TEXT_SCALES[DEFAULT_TEXT_SCALE]))
     app.setFont(font)
     app.setStyleSheet(STYLESHEET)
 
@@ -125,7 +155,7 @@ QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QSplitter::handle {{ background: {BG}; }}
 QSplitter::handle:hover {{ background: {ACCENT_DIM}; }}
 QLabel[muted="true"] {{ color: {MUTED}; }}
-QLabel[heading="true"] {{ font-size: 15px; font-weight: 700; color: {TEXT}; }}
+QLabel[heading="true"] {{ font-weight: 700; color: {TEXT}; }}
 """
 
 

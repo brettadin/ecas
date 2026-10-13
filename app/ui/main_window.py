@@ -23,8 +23,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pyqtgraph as pg
 from numpy.typing import NDArray
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QSettings, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QActionGroup, QColor
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QListWidgetItem, QFileDialog, QMessageBox, QDockWidget, QFrame,
     QGroupBox, QHBoxLayout, QLabel, QListWidget, QMainWindow, QPlainTextEdit, QPushButton, QScrollArea, QSlider,
@@ -47,7 +47,7 @@ from ..core.physics import LineShape
 from .mappings import LinearMapping, LogMapping
 from .identify_panel import IdentifyPanel
 from .sources_dialog import SourcesDialog
-from .theme import CollapsibleSection, primary
+from .theme import (DEFAULT_TEXT_SCALE, TEXT_SCALES, CollapsibleSection, apply_text_scale, primary)
 from .transit_panel import TransitPanel
 
 
@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self._activity_dock)
         self._activity_dock.hide()
         self._build_menu()
+        self._apply_saved_text_size()
 
         self._status = QLabel()
         self.statusBar().addWidget(self._status, 1)
@@ -954,6 +955,32 @@ class MainWindow(QMainWindow):
         helpm.addAction("Sources && citations…").triggered.connect(self._on_sources)
         view = self.menuBar().addMenu("&View")
         view.addAction(self._activity_dock.toggleViewAction())
+        sizes = view.addMenu("Text size")
+        group = QActionGroup(self)
+        current = self._text_size_name()
+        for name in TEXT_SCALES:
+            action = sizes.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(name == current)
+            group.addAction(action)
+            action.triggered.connect(partial(self._set_text_size, name))
+
+    @staticmethod
+    def _text_size_name() -> str:
+        name = str(QSettings("ECAS", "ECAS").value("text_size", DEFAULT_TEXT_SCALE))
+        return name if name in TEXT_SCALES else DEFAULT_TEXT_SCALE
+
+    def _apply_saved_text_size(self) -> None:
+        from PyQt6.QtWidgets import QApplication
+
+        apply_text_scale(QApplication.instance(), TEXT_SCALES[self._text_size_name()])
+
+    def _set_text_size(self, name: str) -> None:
+        from PyQt6.QtWidgets import QApplication
+
+        QSettings("ECAS", "ECAS").setValue("text_size", name)
+        apply_text_scale(QApplication.instance(), TEXT_SCALES[name])
+        self._log(f"Text size set to {name}.")
 
     def _ask_save(self, title: str, name: str, filt: str) -> Optional[str]:
         path, _ = QFileDialog.getSaveFileName(self, title, name, filt)
