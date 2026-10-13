@@ -2,6 +2,20 @@
 
 Newest first.  Versions follow `0.PHASE.PATCH`.  Every entry says what changed, why, and how it was verified.
 
+## Unreleased — JWST time-series wavelength grids (Oct 2026)
+**Fixed**
+- x1dints files were refused ("integrations have different wavelength grids") whenever any integration
+  differed from the first by more than float rounding. Integrations that differ by less than half a pixel
+  (float32 storage, per-integration recalibration) are now interpolated onto the first integration's grid.
+  The file's largest offset and number of interpolated integrations are recorded in the series metadata.
+- Integrations offset by half a pixel or more are still refused, now with the offending integration index and
+  its offset, because such spectra usually come from different detector segments and cannot be merged safely.
+**Added**
+- `tools/diagnose_x1dints.py`: reports grid offsets for any x1dints file, to send with a bug report.
+**Verified**
+- Synthetic files: sub-pixel offsets load; a two-pixel offset is refused. Two regression tests added.
+  Full suite: 157 passed.
+
 ## Unreleased — Single-transit fitting and extraction fixes (Oct 2026)
 **Fixed**
 - Single-transit light curves were normalised by their overall median. When the transit covers much of a

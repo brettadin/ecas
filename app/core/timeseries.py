@@ -242,6 +242,71 @@ def load_matrix_csv(path: Union[str, Path], wavelength_unit: str = "auto") -> Sp
                               meta={"source": str(path), "time_offset": 0.0})
 
 
+# Integrations of one observation can disagree in wavelength at the level of float rounding or a fraction
+# of a pixel (per-integration wavelength recalibration, float32 storage). Those are placed on one grid by
+# interpolation. A larger offset means different detector segments or a different wavelength solution, and
+# is refused, because merging such spectra would silently create a fake spectrum.
+_EXACT_SHIFT_PIXELS = 1e-6
+_MAX_REGRID_SHIFT_PIXELS = 0.5
+
+
+def _place_on_common_grid(rows_w, rows_f, rows_e):
+    """Put every integration on the first integration's wavelength grid; return grid and diagnostics."""
+    def clean(w, f, e):
+        order = np.argsort(np.where(np.isfinite(w), w, np.inf), kind="stable")
+        w, f = w[order], f[order]
+        e = None if e is None else e[order]
+        keep = np.isfinite(w) & (w > 0.0)
+        return w[keep], f[keep], (None if e is None else e[keep])
+
+    ref, _, _ = clean(rows_w[0], rows_f[0], rows_e[0])
+    if ref.size < 8 or np.any(np.diff(ref) <= 0.0):
+        raise TimeSeriesError("the first integration's wavelength grid is not strictly increasing")
+    spacing = float(np.median(np.diff(ref)))
+    n = len(rows_f)
+    flux = np.full((n, ref.size), np.nan)
+    has_err = all(e is not None for e in rows_e)
+    err = np.full((n, ref.size), np.nan) if has_err else None
+    max_shift = 0.0
+    regridded = 0
+    for i in range(n):
+        wc, fc, ec = clean(rows_w[i], rows_f[i], rows_e[i])
+        if wc.size != ref.size:
+            raise TimeSeriesError(
+                f"integration {i} has {wc.size} wavelength channels but the first has {ref.size}. "
+                "The spectra come from different detector segments or extraction settings and cannot be "
+                "combined into one time series.")
+        shift = float(np.max(np.abs(wc - ref)) / spacing)
+        if shift > _MAX_REGRID_SHIFT_PIXELS:
+            raise TimeSeriesError(
+                f"integration {i} is shifted by {shift:.2f} pixels from the first integration's wavelength grid "
+                f"({wc[0]:.5f}-{wc[-1]:.5f} µm vs {ref[0]:.5f}-{ref[-1]:.5f} µm). This usually means the file "
+                "mixes detector segments or wavelength solutions; the spectra cannot be combined safely.")
+        max_shift = max(max_shift, shift)
+        if shift <= _EXACT_SHIFT_PIXELS:
+            flux[i] = fc
+            if has_err:
+                err[i] = ec
+        else:
+            regridded += 1
+            ok = np.isfinite(fc)
+            flux[i] = np.interp(ref, wc[ok], fc[ok], left=np.nan, right=np.nan)
+            if has_err:
+                ok_e = np.isfinite(ec)
+                err[i] = np.interp(ref, wc[ok_e], ec[ok_e], left=np.nan, right=np.nan)
+    info = {
+        "wavelength_grid_check": {
+            "integrations": n,
+            "integrations_interpolated": regridded,
+            "largest_shift_pixels": round(max_shift, 4),
+            "tolerance_pixels": _MAX_REGRID_SHIFT_PIXELS,
+            "note": ("integrations whose grids differed by a fraction of a pixel were linearly interpolated "
+                     "onto the first integration's grid" if regridded else "all integrations shared one grid"),
+        }
+    }
+    return ref, flux, err, info
+
+
 def load_x1dints(path: Union[str, Path]) -> SpectralTimeSeries:
     """JWST ``*_x1dints.fits`` with vector EXTRACT1D rows and an INT_TIMES table."""
     try:
@@ -250,7 +315,7 @@ def load_x1dints(path: Union[str, Path]) -> SpectralTimeSeries:
         raise TimeSeriesError("reading FITS needs astropy (pip install astropy)") from exc
     try:
         with fits.open(path, memmap=False) as hdul:
-            wl, fluxes, errs, times, time_kind = None, [], [], None, ""
+            blocks, times, time_kind = [], None, ""
             for hdu in hdul:
                 name = str(hdu.name).upper()
                 if name == "EXTRACT1D" and getattr(hdu, "columns", None) is not None and hdu.data is not None:
@@ -268,14 +333,7 @@ def load_x1dints(path: Union[str, Path]) -> SpectralTimeSeries:
                         e = e[None, :]
                     if w.ndim != 2 or f.shape != w.shape or (e is not None and e.shape != w.shape):
                         raise TimeSeriesError("EXTRACT1D wavelength, flux and error arrays have incompatible shapes")
-                    if wl is None:
-                        wl = w[0]
-                    elif w.shape[1] != wl.size or not np.allclose(w, wl[None, :], rtol=1e-8, atol=0.0,
-                                                                    equal_nan=True):
-                        raise TimeSeriesError("integrations have different wavelength grids")
-                    fluxes.append(f)
-                    if "FLUX_ERROR" in cols:
-                        errs.append(e)
+                    blocks.append((w, f, e))
                 elif name == "INT_TIMES" and hdu.data is not None:
                     names = {n.lower(): n for n in hdu.columns.names}
                     pick = next((n for k, n in names.items() if "mid" in k and "bjd" in k), None)
@@ -287,14 +345,19 @@ def load_x1dints(path: Union[str, Path]) -> SpectralTimeSeries:
                         times = np.asarray(hdu.data[pick], dtype=np.float64)
     except OSError as exc:
         raise TimeSeriesError(f"cannot read {path}: {exc}") from exc
-    n_integrations = sum(part.shape[0] for part in fluxes)
+    if not blocks:
+        raise TimeSeriesError("found 0 EXTRACT1D integrations; this does not look like an x1dints file "
+                              "(a combined *_x1d.fits holds one spectrum - load it as an ordinary spectrum)")
+    rows_w, rows_f, rows_e = [], [], []
+    for w, f, e in blocks:
+        for i in range(w.shape[0]):
+            rows_w.append(w[i]); rows_f.append(f[i]); rows_e.append(None if e is None else e[i])
+    n_integrations = len(rows_f)
     if n_integrations < 20:
         raise TimeSeriesError(f"found {n_integrations} EXTRACT1D integrations; this does not look like an x1dints file "
                               "(a combined *_x1d.fits holds one spectrum - load it as an ordinary spectrum)")
-    flux = np.concatenate(fluxes, axis=0)
-    if wl is None:
-        raise TimeSeriesError("no EXTRACT1D wavelength grid found")
-    meta: Dict[str, Any] = {"source": str(path), "flux_units": "as in file (JWST: Jy)"}
+    wl, flux, flux_err, grid_info = _place_on_common_grid(rows_w, rows_f, rows_e)
+    meta: Dict[str, Any] = {"source": str(path), "flux_units": "as in file (JWST: Jy)", **grid_info}
     if times is not None and times.size == flux.shape[0]:
         times = times[: flux.shape[0]]
         meta.update(time_offset=float(times[0]), time_kind=time_kind)
@@ -304,5 +367,4 @@ def load_x1dints(path: Union[str, Path]) -> SpectralTimeSeries:
     else:
         times = np.arange(flux.shape[0], dtype=np.float64)
         meta.update(time_offset=0.0, time_kind="integration number (no INT_TIMES found: set times manually)")
-    flux_err = np.concatenate(errs, axis=0) if len(errs) == len(fluxes) else None
     return SpectralTimeSeries(times, wl, flux, flux_err, meta)

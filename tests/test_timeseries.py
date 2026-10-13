@@ -197,3 +197,40 @@ def test_archive_ephemeris_gives_transit_params_for_single_transit_data():
     bare = archives.fetch_planet("TEST-1 b", fetch=lambda u: _csv(pl_ratdor=""))
     with pytest.raises(archives.ArchiveError, match="no a/R"):
         archives.transit_params_from_archive(bare, 2459022.9, 2459022.0)
+
+
+def _x1dints_with_grid_offsets(path, offsets_pix, n=60, seed=0):
+    from astropy.io import fits
+    rng = np.random.default_rng(seed)
+    base = np.linspace(2.4, 5.2, 400)
+    pixel = float(np.median(np.diff(base)))
+    hdus = [fits.PrimaryHDU()]
+    for i in range(n):
+        w = (base + offsets_pix[i] * pixel).astype(np.float32).astype(np.float64)   # float32 storage
+        f = 1.0 + rng.normal(0.0, 1e-3, base.size)
+        cols = [fits.Column(name="WAVELENGTH", format="D", unit="um", array=w),
+                fits.Column(name="FLUX", format="D", array=f),
+                fits.Column(name="FLUX_ERROR", format="D", array=np.full(f.size, 1e-3))]
+        hdus.append(fits.BinTableHDU.from_columns(cols, name="EXTRACT1D"))
+    times = 2460000.5 + np.linspace(0.0, 0.1, n)
+    hdus.append(fits.BinTableHDU.from_columns([fits.Column(name="int_mid_BJD_TDB", format="D", array=times)],
+                                              name="INT_TIMES"))
+    fits.HDUList(hdus).writeto(path, overwrite=True)
+    return path
+
+
+def test_sub_pixel_grid_differences_are_placed_on_one_grid(tmp_path):
+    """Integrations differing by fractions of a pixel (float32 storage, recalibration) must load."""
+    rng = np.random.default_rng(5)
+    path = _x1dints_with_grid_offsets(tmp_path / "subpixel_x1dints.fits", rng.uniform(-0.3, 0.3, 60))
+    series = load_x1dints(path)
+    assert series.n_times == 60 and series.n_wavelengths >= 390          # edge channels may fall off
+    check = series.meta["wavelength_grid_check"]
+    assert check["integrations_interpolated"] > 0 and check["largest_shift_pixels"] <= 0.5
+
+
+def test_multi_pixel_grid_differences_are_refused_with_the_offending_integration(tmp_path):
+    offsets = np.zeros(60); offsets[30] = 2.0
+    path = _x1dints_with_grid_offsets(tmp_path / "segments_x1dints.fits", offsets)
+    with pytest.raises(TimeSeriesError, match="integration 30 is shifted by 2.00 pixels"):
+        load_x1dints(path)
