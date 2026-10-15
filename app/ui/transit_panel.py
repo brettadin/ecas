@@ -40,6 +40,7 @@ from ..core.transit import (
     analyze_lightcurve, bin_depth_spectrum, depth_spectrum_to_observation, extract_transmission_spectrum,
     load_lightcurve_csv, orbit_positions, transit_model,
 )
+from .tasks import run_async
 from .mappings import LogMapping
 from .theme import mono_font, primary, muted
 
