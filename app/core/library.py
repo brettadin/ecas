@@ -112,7 +112,10 @@ def fetch_nist_jcamp(identifier: str, index: int = 0, fetch=None, spectrum: str 
     url = nist_webbook_url(identifier, index, spectrum)
     if fetch is None:
         try:
-            with urllib.request.urlopen(url, timeout=30) as response:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            with urllib.request.urlopen(req, timeout=30) as response:
                 text = response.read().decode("utf-8", errors="replace")
         except OSError as exc:
             raise LibraryError(f"NIST WebBook request failed: {exc}") from exc
