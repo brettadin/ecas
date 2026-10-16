@@ -1,0 +1,71 @@
+im adding this:
+pip install aider-chat
+
+
+because i want to have an agent running locally
+the stuff with roo, this other python run_ai.py is too messy
+roo didnt work
+and the run_ai is way too hand holdy and tedious
+
+
+
+had to change the location
+
+
+# 1. Move into your project directory
+cd C:\Code\ECAS\ecas
+
+# 2. Activate your project's local virtual environment 
+.venv-1\Scripts\activate
+
+# 3. Install aider-chat without forcing frozen historical package versions
+pip install --prefer-binary aider-chat
+
+
+
+
+ugh another attempt
+
+
+
+:: 1. Install the standalone package tool globally
+python -m pip install aider-install
+
+:: 2. Use the installer to deploy the background architecture safely
+aider-install
+
+:: 3. Launch Aider pointed directly at your local Fable model
+aider --model ollama/parable/granite4.1-fable:8b --openai-api-base http://127.0.0
+
+
+but that had issues
+
+
+so i did this
+
+
+# 1. Run the background setup tool directly using its absolute script location
+& "$env:APPDATA\Python\Python314\Scripts\aider-install.exe"
+
+# 2. Change directory straight to your exoplanet codebase
+cd C:\Code\ECAS\ecas
+
+# 3. Launch the agent using its direct path, tied to your local Fable engine
+& "$env:APPDATA\Python\Python314\Scripts\aider.exe" --model ollama/parable/granite4.1-fable:8b --openai-api-base http://127.0.0
+
+
+
+
+had to do
+
+aider --model ollama/parable/granite4.1-fable:8b --openai-api-base http://127.0.0
+
+
+then added aider to gitignore
+
+now its running a repo scan
+seems to be working okay
+
+shit i need to get ready to leave
+
+and move this to my laptop
