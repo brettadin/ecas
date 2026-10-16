@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: ecas
+Version: 0.8.0
+Summary: Exoplanetary Characterization & Astrochemistry Suite
+Requires-Python: >=3.10
+Requires-Dist: PyQt6>=6.5
+Requires-Dist: pyqtgraph>=0.13.3
+Requires-Dist: numpy>=1.24
+Requires-Dist: scipy>=1.10
+Requires-Dist: astropy>=6.0
+Provides-Extra: viewer3d
+Requires-Dist: pyvista>=0.43; extra == "viewer3d"
+Requires-Dist: pyvistaqt>=0.11; extra == "viewer3d"
+Provides-Extra: archives
+Requires-Dist: astroquery>=0.4.7; extra == "archives"
+Provides-Extra: test
+Requires-Dist: pytest>=7; extra == "test"
