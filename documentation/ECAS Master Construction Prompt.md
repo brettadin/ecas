@@ -12,10 +12,10 @@
 
 **About me.** I have a BS in Chemistry and strong interest in spectroscopy and exoplanets, but essentially no programming experience. I will run commands you give me, copy errors back to you, and judge results scientifically. I cannot review code for correctness. Therefore **your testing and honesty are my only safety net.**
 
-**Environment.** Windows 11 (PowerShell, not bash), Python, 16 GB RAM, RTX 3060 Ti with 8 GB VRAM. Local-first. Free software and public data only. No paid services or paid scientific software as requirements. Internet access is allowed for public data.
+**Environment.** Local-first. Free software and public data only. No paid services or paid scientific software as requirements. Internet access is allowed for public data.
 
 **Existing project (inspect before assuming; verify against the actual repo, not this summary).**
-- Repo: https://github.com/brettadin/ECASv2 (master), local path `C:\Users\brett\AIProjects\ECAS`. Issues are tracked on GitHub; I post bugs there.
+- Repo: https://github.com/brettadin/ECAS (master), local path `C:\Users\brett\AIProjects\ECAS`. Issues are tracked on GitHub; I post bugs there.
 - Stack in use: PyQt6 + pyqtgraph (no Matplotlib in the UI), NumPy-vectorized line shapes, physics decoupled from Qt.
 - Reported existing modules: `archives.py` (NASA Exoplanet Archive TAP, MAST search/download, URL cache), `library.py` (ReferenceSpectrum, HITRAN/HAPI wrapper, ExoMol and NIST JCAMP import), `sources.py` (citation registry), `atmosphere.py` (petitRADTRANS forward model), `retrieval_validation.py`, `transit.py`, `physics.py`, `data/gases.json`.
 - Reported known problems: NIST fetch fails (HTTP 403; also needs name-to-identifier handling); MAST downloads are slow and re-downloaded despite caching; some JWST NIRSpec files fail to parse (mismatched wavelength channel counts across integrations; non-positive out-of-transit flux); playback is laggy on large data; petitRADTRANS integration had a missing-import bug; gas data still contains `mock://` entries and mock data labeled MOCK; a previous patch was reported installed but was not actually in the file.
