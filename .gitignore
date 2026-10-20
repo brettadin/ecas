@@ -1,2 +1,4 @@
 run_ai.py
 .aider*
+.venv/
+__pycache__/
